@@ -255,6 +255,41 @@ button { color: inherit; }
   .dialog-actions { flex-direction:column-reverse; }
   .dialog-actions button { width:100%; }
 }
+
+/* Compact permission matrix with an independently scrollable body. */
+.permission-dialog { height: min(760px, 88vh); max-height: 88vh; display: flex; flex-direction: column; overflow: hidden; }
+.permission-heading { flex: 0 0 auto; }
+.permission-tools { margin-top: 19px; padding: 10px 12px; flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 14px; border: 1px solid var(--line); border-bottom: 0; border-radius: 10px 10px 0 0; color: #718198; background: rgba(7,13,23,.7); font-size: 9px; font-weight: 850; }
+.permission-tools input { width: min(230px, 45%); height: 34px; padding: 0 11px; border: 1px solid var(--line); border-radius: 7px; outline: 0; color: #dbe6f6; background: rgba(255,255,255,.025); font-size: 9px; }
+.permission-tools input:focus { border-color: rgba(75,141,255,.45); box-shadow: 0 0 0 3px rgba(75,141,255,.07); }
+.permission-matrix-scroll { min-height: 0; flex: 1 1 auto; overflow: auto; border: 1px solid var(--line); background: rgba(5,10,18,.42); }
+.permission-matrix { width: 100%; border-collapse: separate; border-spacing: 0; color: #9eacc0; font-size: 9px; }
+.permission-matrix th, .permission-matrix td { height: 53px; padding: 8px 12px; border-right: 1px solid rgba(125,151,190,.08); border-bottom: 1px solid rgba(125,151,190,.08); text-align: center; white-space: nowrap; }
+.permission-matrix thead th { height: 42px; position: sticky; z-index: 3; top: 0; color: #7f90a8; background: #0c1625; font-size: 8px; font-weight: 900; }
+.permission-matrix th:first-child { width: 235px; position: sticky; z-index: 2; left: 0; text-align: left; background: #0c1625; }
+.permission-matrix thead th:first-child { z-index: 4; }
+.permission-matrix tbody th { display: flex; align-items: center; gap: 10px; }
+.permission-matrix tbody th > span { width: 30px; height: 30px; flex: 0 0 30px; display: grid; place-items: center; border-radius: 7px; color: #9fc1ff; background: rgba(75,141,255,.12); font-size: 11px; font-weight: 900; }
+.permission-matrix tbody th div { min-width: 0; display: grid; gap: 3px; }
+.permission-matrix tbody strong, .permission-matrix tbody small { max-width: 165px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.permission-matrix tbody strong { color: #cbd7e8; font-size: 9px; }
+.permission-matrix tbody small { color: #607087; font-size: 8px; font-weight: 700; }
+.permission-matrix tr.changed th:first-child { box-shadow: inset 3px 0 0 #43d6c5; }
+.permission-matrix input { width: 16px; height: 16px; accent-color: #347fff; cursor: pointer; }
+.permission-matrix td button { padding: 6px 10px; border: 1px solid rgba(86,137,215,.2); border-radius: 6px; color: #8db6ff; background: rgba(75,141,255,.07); cursor: pointer; font-size: 8px; font-weight: 900; }
+.permission-matrix td button:hover { color: white; background: rgba(75,141,255,.15); }
+.permission-footer { flex: 0 0 auto; padding-top: 15px; display: flex; align-items: center; justify-content: space-between; gap: 15px; color: #6f8097; font-size: 9px; font-weight: 800; }
+.permission-footer > div { display: flex; gap: 8px; }
+.permission-footer button { height: 40px; padding: 0 17px; border-radius: 9px; cursor: pointer; font-size: 9px; font-weight: 900; }
+.permission-footer .cancel { border: 1px solid var(--line); color: #8795a9; background: rgba(255,255,255,.025); }
+.permission-footer .save { border: 1px solid rgba(89,147,255,.36); color: white; background: linear-gradient(135deg,#347fff,#1e5bc7); }
+.permission-footer .save:disabled { opacity: .4; cursor: not-allowed; }
+@media(max-width:700px) {
+  .permission-dialog { width: 98vw; height: 92vh; max-height: 92vh; padding: 22px 14px 14px; }
+  .permission-matrix th:first-child { width: 190px; }
+  .permission-footer { align-items: flex-start; flex-direction: column; }
+  .permission-footer > div, .permission-footer button { width: 100%; }
+}
 @media(prefers-reduced-motion:reduce) {
   *,*::before,*::after { animation-duration:.01ms!important; animation-iteration-count:1!important; transition-duration:.01ms!important; }
 }

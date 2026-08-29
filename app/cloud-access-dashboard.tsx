@@ -32,8 +32,8 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
   const [copied, setCopied] = useState('');
   const [showPermissions, setShowPermissions] = useState(false);
   const [permissionUsers, setPermissionUsers] = useState<PermissionUser[]>([]);
-  const [selectedPermissionUser, setSelectedPermissionUser] = useState('');
-  const [permissionGroupIds, setPermissionGroupIds] = useState<string[]>([]);
+  const [permissionQuery, setPermissionQuery] = useState('');
+  const [dirtyPermissionUsers, setDirtyPermissionUsers] = useState<string[]>([]);
 
   useEffect(() => {
     if (!activeMenu) return;
@@ -88,32 +88,25 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
       if (!response.ok) throw new Error(payload.error ?? '权限读取失败');
       const users = payload.users ?? [];
       setPermissionUsers(users);
-      const first = users.find((item) => item.role === 'user') ?? users[0];
-      setSelectedPermissionUser(first?.userId ?? '');
-      setPermissionGroupIds(first?.groupIds ?? []);
+      setDirtyPermissionUsers([]);
     } catch (error) { setNotice(error instanceof Error ? error.message : '权限读取失败'); }
     finally { setSaving(false); }
   }
 
-  function choosePermissionUser(userId: string) {
-    const user = permissionUsers.find((item) => item.userId === userId);
-    setSelectedPermissionUser(userId);
-    setPermissionGroupIds(user?.groupIds ?? []);
-  }
-
-  function toggleGroupPermission(groupId: string) {
-    setPermissionGroupIds((current) => current.includes(groupId) ? current.filter((item) => item !== groupId) : [...current, groupId]);
+  function updateUserGroups(userId: string, nextGroupIds: string[]) {
+    setPermissionUsers((current) => current.map((item) => item.userId === userId ? { ...item, groupIds: nextGroupIds } : item));
+    setDirtyPermissionUsers((current) => current.includes(userId) ? current : [...current, userId]);
   }
 
   async function saveUserPermissions() {
-    const target = permissionUsers.find((item) => item.userId === selectedPermissionUser);
-    if (!target) return;
+    const targets = permissionUsers.filter((item) => dirtyPermissionUsers.includes(item.userId));
+    if (targets.length === 0) return;
     setSaving(true);
     try {
-      const response = await fetch('/api/permissions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: target.userId, userName: target.userName, groupIds: permissionGroupIds }) });
-      const payload = await response.json() as { error?: string };
-      if (!response.ok) throw new Error(payload.error ?? '权限保存失败');
-      setPermissionUsers((current) => current.map((item) => item.userId === target.userId ? { ...item, groupIds: permissionGroupIds } : item));
+      const responses = await Promise.all(targets.map((target) => fetch('/api/permissions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: target.userId, userName: target.userName, groupIds: target.groupIds }) })));
+      const failed = responses.find((response) => !response.ok);
+      if (failed) { const payload = await failed.json() as { error?: string }; throw new Error(payload.error ?? '权限保存失败'); }
+      setDirtyPermissionUsers([]);
       setNotice('分组权限已保存');
     } catch (error) { setNotice(error instanceof Error ? error.message : '权限保存失败'); }
     finally { setSaving(false); }
@@ -301,7 +294,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
 
       {showAddGroup && <div className="dialog-layer" onMouseDown={(event) => event.target === event.currentTarget && setShowAddGroup(false)}><section className="group-dialog" role="dialog" aria-modal="true"><button className="dialog-close" onClick={() => setShowAddGroup(false)}>×</button><h2>新建分组</h2><form onSubmit={(event) => void addGroup(event)}><label><span>分组名称</span><input autoFocus value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="例如：新代付组" maxLength={50} /></label><div className="dialog-actions"><button type="button" className="cancel" onClick={() => setShowAddGroup(false)}>取消</button><button className="save" disabled={saving || !groupName.trim()}>{saving ? '创建中...' : '创建'}</button></div></form></section></div>}
 
-      {showPermissions && <div className="dialog-layer" onMouseDown={(event) => event.target === event.currentTarget && setShowPermissions(false)}><section className="permission-dialog" role="dialog" aria-modal="true"><button className="dialog-close" onClick={() => setShowPermissions(false)}>×</button><div className="permission-heading"><span>ACCESS CONTROL</span><h2>分组权限</h2><p>选择用户可以查看和进入的账号分组</p></div>{permissionUsers.length === 0 ? <div className="permission-empty">ITSM 中暂无可分配的启用用户</div> : <div className="permission-layout"><div className="permission-users">{permissionUsers.map((item) => <button key={item.userId} className={selectedPermissionUser === item.userId ? 'active' : ''} onClick={() => choosePermissionUser(item.userId)}><span>{item.userName.slice(0, 1).toUpperCase()}</span><div><strong>{item.userName}</strong><small>{item.role === 'user' ? item.userId : '管理员'}</small></div></button>)}</div><div className="permission-groups"><div className="permission-groups-head"><strong>可见分组</strong><span>{permissionGroupIds.length} 项</span></div><label><input type="checkbox" checked={permissionGroupIds.includes('__ungrouped')} onChange={() => toggleGroupPermission('__ungrouped')} /><span><i className="folder empty" />未分组</span></label>{groups.map((group) => <label key={group.groupId}><input type="checkbox" checked={permissionGroupIds.includes(group.groupId)} onChange={() => toggleGroupPermission(group.groupId)} /><span><i className="folder" />{group.name}</span></label>)}</div></div>}<div className="dialog-actions"><button className="cancel" onClick={() => setShowPermissions(false)}>关闭</button><button className="save" disabled={saving || !selectedPermissionUser} onClick={() => void saveUserPermissions()}>{saving ? '保存中...' : '保存权限'}</button></div></section></div>}
+      {showPermissions && <div className="dialog-layer" onMouseDown={(event) => event.target === event.currentTarget && setShowPermissions(false)}><section className="permission-dialog" role="dialog" aria-modal="true"><button className="dialog-close" onClick={() => setShowPermissions(false)}>×</button><div className="permission-heading"><span>ACCESS CONTROL</span><h2>分组权限</h2><p>勾选用户可以查看和进入的账号分组</p></div><div className="permission-tools"><span>普通用户 {permissionUsers.filter((item) => item.role === 'user').length}</span><input value={permissionQuery} onChange={(event) => setPermissionQuery(event.target.value)} placeholder="搜索用户" /></div>{permissionUsers.filter((item) => item.role === 'user').length === 0 ? <div className="permission-empty">ITSM 中暂无可分配的普通用户</div> : <div className="permission-matrix-scroll"><table className="permission-matrix"><thead><tr><th>用户</th><th>未分组</th>{groups.map((group) => <th key={group.groupId}>{group.name}</th>)}<th>快捷操作</th></tr></thead><tbody>{permissionUsers.filter((item) => item.role === 'user' && (!permissionQuery.trim() || item.userName.toLowerCase().includes(permissionQuery.trim().toLowerCase()))).map((item) => { const allGroupIds = ['__ungrouped', ...groups.map((group) => group.groupId)]; const allSelected = allGroupIds.every((groupId) => item.groupIds.includes(groupId)); return <tr key={item.userId} className={dirtyPermissionUsers.includes(item.userId) ? 'changed' : ''}><th><span>{item.userName.slice(0, 1).toUpperCase()}</span><div><strong>{item.userName}</strong><small>{item.groupIds.length} 个分组</small></div></th><td><input aria-label={`${item.userName} 未分组`} type="checkbox" checked={item.groupIds.includes('__ungrouped')} onChange={() => updateUserGroups(item.userId, item.groupIds.includes('__ungrouped') ? item.groupIds.filter((value) => value !== '__ungrouped') : [...item.groupIds, '__ungrouped'])} /></td>{groups.map((group) => <td key={group.groupId}><input aria-label={`${item.userName} ${group.name}`} type="checkbox" checked={item.groupIds.includes(group.groupId)} onChange={() => updateUserGroups(item.userId, item.groupIds.includes(group.groupId) ? item.groupIds.filter((value) => value !== group.groupId) : [...item.groupIds, group.groupId])} /></td>)}<td><button onClick={() => updateUserGroups(item.userId, allSelected ? [] : allGroupIds)}>{allSelected ? '清空' : '全部'}</button></td></tr>; })}</tbody></table></div>}<div className="permission-footer"><span>{dirtyPermissionUsers.length > 0 ? `${dirtyPermissionUsers.length} 位用户待保存` : '权限已同步'}</span><div><button className="cancel" onClick={() => setShowPermissions(false)}>关闭</button><button className="save" disabled={saving || dirtyPermissionUsers.length === 0} onClick={() => void saveUserPermissions()}>{saving ? '保存中...' : '保存权限'}</button></div></div></section></div>}
 
       {showAdd && (
         <div className="dialog-layer" onMouseDown={(event) => event.target === event.currentTarget && setShowAdd(false)}>
