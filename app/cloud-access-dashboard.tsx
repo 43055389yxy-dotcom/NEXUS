@@ -86,7 +86,8 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
       const response = await fetch('/api/permissions', { cache: 'no-store' });
       const payload = await response.json() as { users?: PermissionUser[]; error?: string };
       if (!response.ok) throw new Error(payload.error ?? '权限读取失败');
-      const users = payload.users ?? [];
+      const roleOrder: Record<string, number> = { super_admin: 0, admin: 1, user: 2 };
+      const users = [...(payload.users ?? [])].sort((a, b) => (roleOrder[a.role] ?? 3) - (roleOrder[b.role] ?? 3) || a.userName.localeCompare(b.userName, 'zh-CN'));
       setPermissionUsers(users);
       setDirtyPermissionUsers([]);
     } catch (error) { setNotice(error instanceof Error ? error.message : '权限读取失败'); }
@@ -267,7 +268,6 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
             {groups.map((group) => <button key={group.groupId} className={selectedGroup === group.groupId ? 'active' : ''} onClick={() => setSelectedGroup(group.groupId)} onDragOver={(event) => { if (isAdmin) event.preventDefault(); }} onDrop={(event) => { if (!isAdmin) return; event.preventDefault(); const accountId = event.dataTransfer.getData('text/account-id'); if (accountId) void changeGroup(accountId, group.groupId); }}><span><i className="folder" />{group.name}</span><b>{groupCount(group.groupId)}</b></button>)}
             {(isAdmin || accounts.some((account) => !account.groupId)) && <button className={selectedGroup === 'ungrouped' ? 'active' : ''} onClick={() => setSelectedGroup('ungrouped')} onDragOver={(event) => { if (isAdmin) event.preventDefault(); }} onDrop={(event) => { if (!isAdmin) return; event.preventDefault(); const accountId = event.dataTransfer.getData('text/account-id'); if (accountId) void changeGroup(accountId, ''); }}><span><i className="folder empty" />未分组</span><b>{groupCount('ungrouped')}</b></button>}
           </nav>
-          {isAdmin && <button className="sidebar-add" onClick={() => setShowAddGroup(true)}><span>＋</span>新建分组</button>}
         </aside>
 
         <section className="console-content">
