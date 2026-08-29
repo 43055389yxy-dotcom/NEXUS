@@ -51,12 +51,14 @@ async function rememberIdentity(identity) {
 }
 
 async function allowedGroupIds(identity) {
-  if (ADMIN_ROLES.has(identity.role)) return null;
+  if (identity.role === "super_admin") return null;
   const result = await dynamodb.send(new ScanCommand({
     TableName: groupsTable,
-    FilterExpression: "itemType = :type AND userId = :userId",
-    ExpressionAttributeValues: { ":type": { S: "permission" }, ":userId": { S: identity.userId } },
+    FilterExpression: "userId = :userId AND (itemType = :permission OR itemType = :configured)",
+    ExpressionAttributeValues: { ":permission": { S: "permission" }, ":configured": { S: "permission-config" }, ":userId": { S: identity.userId } },
   }));
+  const configured = (result.Items || []).some((item) => item.itemType?.S === "permission-config");
+  if (identity.role === "admin" && !configured) return null;
   return new Set((result.Items || []).map((item) => item.grantedGroupId?.S).filter(Boolean));
 }
 
@@ -206,14 +208,19 @@ async function listPermissions(identity) {
   const result = await dynamodb.send(new ScanCommand({ TableName: groupsTable }));
   const users = new Map();
   for (const item of result.Items || []) {
-    if (item.itemType?.S === "user") users.set(item.userId.S, { userId: item.userId.S, userName: item.userName?.S || item.userId.S, role: item.role?.S || "user", groupIds: [] });
+    if (item.itemType?.S === "user") users.set(item.userId.S, { userId: item.userId.S, userName: item.userName?.S || item.userId.S, role: item.role?.S || "user", groupIds: [], configured: false });
   }
   for (const item of result.Items || []) {
     if (item.itemType?.S !== "permission") continue;
     const userId = item.userId?.S;
     if (!userId) continue;
-    if (!users.has(userId)) users.set(userId, { userId, userName: item.userName?.S || userId, role: "user", groupIds: [] });
+    if (!users.has(userId)) users.set(userId, { userId, userName: item.userName?.S || userId, role: "user", groupIds: [], configured: false });
     users.get(userId).groupIds.push(item.grantedGroupId.S);
+  }
+  for (const item of result.Items || []) {
+    if (item.itemType?.S !== "permission-config" || !item.userId?.S) continue;
+    if (!users.has(item.userId.S)) users.set(item.userId.S, { userId: item.userId.S, userName: item.userId.S, role: "user", groupIds: [], configured: true });
+    users.get(item.userId.S).configured = true;
   }
   return [...users.values()].sort((a, b) => a.userName.localeCompare(b.userName, "zh-CN"));
 }
@@ -222,12 +229,17 @@ async function savePermissions(identity, body) {
   requireAdmin(identity);
   const targetUserId = String(body.userId || "").trim();
   const targetUserName = String(body.userName || targetUserId).trim();
+  const targetRole = String(body.targetRole || "user");
   const requested = [...new Set(Array.isArray(body.groupIds) ? body.groupIds.map((value) => String(value).trim()).filter(Boolean) : [])];
   if (!targetUserId || targetUserId.length > 200) throw new Error("Invalid user ID");
+  if (targetRole === "super_admin") { const error = new Error("Super administrator permission cannot be changed"); error.statusCode = 403; throw error; }
+  if (targetRole === "admin" && identity.role !== "super_admin") { const error = new Error("Only super administrators can manage administrators"); error.statusCode = 403; throw error; }
   const existingGroups = await dynamodb.send(new ScanCommand({ TableName: groupsTable }));
   const validGroups = new Set((existingGroups.Items || []).filter((item) => item.name?.S && !item.itemType?.S).map((item) => item.groupId.S));
   validGroups.add(UNGROUPED);
   if (requested.some((groupId) => !validGroups.has(groupId))) throw new Error("Invalid group permission");
+  const callerGroups = await allowedGroupIds(identity);
+  if (callerGroups && requested.some((groupId) => !callerGroups.has(groupId))) { const error = new Error("Cannot grant a group you cannot access"); error.statusCode = 403; throw error; }
   const previous = (existingGroups.Items || []).filter((item) => item.itemType?.S === "permission" && item.userId?.S === targetUserId);
   await Promise.all(previous.map((item) => dynamodb.send(new DeleteItemCommand({ TableName: groupsTable, Key: { groupId: { S: item.groupId.S } } }))));
   await Promise.all(requested.map((grantedGroupId) => {
@@ -237,7 +249,12 @@ async function savePermissions(identity, body) {
       userName: { S: targetUserName }, grantedGroupId: { S: grantedGroupId }, updatedAt: { S: new Date().toISOString() },
     } }));
   }));
-  return { userId: targetUserId, userName: targetUserName, groupIds: requested };
+  const configKey = crypto.createHash("sha256").update(targetUserId).digest("hex");
+  await dynamodb.send(new PutItemCommand({ TableName: groupsTable, Item: {
+    groupId: { S: `permission-config#${configKey}` }, itemType: { S: "permission-config" }, userId: { S: targetUserId },
+    userName: { S: targetUserName }, updatedAt: { S: new Date().toISOString() },
+  } }));
+  return { userId: targetUserId, userName: targetUserName, groupIds: requested, configured: true };
 }
 
 export const handler = async (event) => {
