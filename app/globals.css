@@ -275,9 +275,13 @@ button { color: inherit; }
 .permission-matrix tbody strong { color: #cbd7e8; font-size: 9px; }
 .permission-matrix tbody small { color: #607087; font-size: 8px; font-weight: 700; }
 .permission-matrix tr.changed th:first-child { box-shadow: inset 3px 0 0 #43d6c5; }
+.permission-matrix tr.administrator th:first-child { box-shadow: inset 3px 0 0 #4b8dff; }
+.permission-matrix tr.administrator { background: rgba(75,141,255,.025); }
 .permission-matrix input { width: 16px; height: 16px; accent-color: #347fff; cursor: pointer; }
+.permission-matrix input:disabled { opacity: .72; cursor: default; }
 .permission-matrix td button { padding: 6px 10px; border: 1px solid rgba(86,137,215,.2); border-radius: 6px; color: #8db6ff; background: rgba(75,141,255,.07); cursor: pointer; font-size: 8px; font-weight: 900; }
 .permission-matrix td button:hover { color: white; background: rgba(75,141,255,.15); }
+.permission-matrix td button:disabled { min-width: 58px; color: #69a1ff; border-color: rgba(75,141,255,.12); background: rgba(75,141,255,.04); cursor: default; }
 .permission-footer { flex: 0 0 auto; padding-top: 15px; display: flex; align-items: center; justify-content: space-between; gap: 15px; color: #6f8097; font-size: 9px; font-weight: 800; }
 .permission-footer > div { display: flex; gap: 8px; }
 .permission-footer button { height: 40px; padding: 0 17px; border-radius: 9px; cursor: pointer; font-size: 9px; font-weight: 900; }
