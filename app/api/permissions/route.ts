@@ -2,9 +2,9 @@ import { NextResponse } from 'next/server';
 import { proxyBroker, requireIdentity } from '../broker';
 
 export async function GET() {
-  const { user, denied } = await requireIdentity();
+  const { user, denied } = await requireIdentity(true);
   if (denied || !user) return denied;
-  return proxyBroker('/groups', { method: 'GET' }, user);
+  return proxyBroker('/permissions', { method: 'GET' }, user);
 }
 
 export async function POST(request: Request) {
@@ -12,7 +12,7 @@ export async function POST(request: Request) {
   if (denied || !user) return denied;
   try {
     const body = await request.json();
-    return proxyBroker('/groups', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, user);
+    return proxyBroker('/permissions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, user);
   } catch {
     return NextResponse.json({ error: '请求格式不正确' }, { status: 400 });
   }

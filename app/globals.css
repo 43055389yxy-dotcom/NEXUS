@@ -272,3 +272,34 @@ button { color: inherit; }
 .billing-access-steps li b { width: 20px; height: 20px; flex: 0 0 20px; display: grid; place-items: center; border: 1px solid rgba(67,214,197,.26); border-radius: 6px; color: #63dfd0; background: rgba(67,214,197,.08); font: 800 10px monospace; }
 .billing-access-steps a { color: #77a9ff; font-weight: 750; text-decoration: none; transition: color .18s; }
 .billing-access-steps a:hover { color: #a9c9ff; text-decoration: underline; text-underline-offset: 3px; }
+
+.current-user { max-width: 120px; overflow: hidden; color: #697991; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; font-weight: 800; }
+.permission-button { height: 38px; padding: 0 15px; border: 1px solid rgba(91,139,211,.22); border-radius: 9px; color: #a9c6f5; background: rgba(59,103,174,.08); cursor: pointer; font-size: 9px; font-weight: 900; transition: .2s; }
+.permission-button:hover { color: white; border-color: rgba(91,151,247,.42); background: rgba(59,112,202,.16); }
+.permission-dialog { width: min(780px, 94vw); padding: 30px; position: relative; border: 1px solid rgba(121,153,202,.2); border-radius: 18px; background: linear-gradient(145deg, rgba(17,28,46,.99), rgba(8,15,26,.99)); box-shadow: 0 42px 110px rgba(0,0,0,.58); animation: dialog-in .28s both; }
+.permission-heading > span { color: #57d6c9; font: 800 8px monospace; letter-spacing: .18em; }
+.permission-heading h2 { margin: 7px 0 0; color: #eef4ff; font-size: 22px; letter-spacing: -.035em; }
+.permission-heading p { margin: 7px 0 0; color: #718198; font-size: 10px; }
+.permission-layout { min-height: 315px; margin-top: 24px; display: grid; grid-template-columns: 1fr 1.2fr; overflow: hidden; border: 1px solid var(--line); border-radius: 13px; background: rgba(5,10,18,.35); }
+.permission-users { padding: 9px; display: grid; align-content: start; gap: 5px; border-right: 1px solid var(--line); }
+.permission-users button { min-height: 55px; padding: 8px 10px; display: flex; align-items: center; gap: 10px; border: 1px solid transparent; border-radius: 9px; color: #9aabc1; background: transparent; cursor: pointer; text-align: left; }
+.permission-users button > span { width: 32px; height: 32px; flex: 0 0 32px; display: grid; place-items: center; border-radius: 8px; color: #9fc1ff; background: rgba(75,141,255,.11); font-weight: 900; }
+.permission-users button div { min-width: 0; display: grid; gap: 3px; }
+.permission-users strong, .permission-users small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.permission-users strong { color: #cdd9e9; font-size: 10px; }
+.permission-users small { color: #5f6f86; font: 8px monospace; }
+.permission-users button:hover { background: rgba(82,117,170,.07); }
+.permission-users button.active { border-color: rgba(75,141,255,.23); background: linear-gradient(90deg,rgba(48,112,232,.16),rgba(34,67,118,.07)); }
+.permission-groups { padding: 18px; display: grid; align-content: start; gap: 7px; }
+.permission-groups-head { margin-bottom: 7px; display: flex; justify-content: space-between; color: #8999ae; font-size: 10px; }
+.permission-groups-head span { color: #67a1ff; font: 800 9px monospace; }
+.permission-groups label { min-height: 42px; padding: 0 12px; display: flex; align-items: center; gap: 10px; border: 1px solid rgba(128,153,190,.1); border-radius: 8px; color: #a8b7ca; background: rgba(255,255,255,.018); cursor: pointer; font-size: 10px; font-weight: 800; }
+.permission-groups label:hover { border-color: rgba(75,141,255,.25); background: rgba(75,141,255,.05); }
+.permission-groups input { accent-color: #347fff; }
+.permission-groups label > span { display: flex; align-items: center; gap: 10px; }
+.permission-empty { min-height: 220px; margin-top: 24px; display: grid; place-items: center; border: 1px dashed var(--line); border-radius: 13px; color: #718198; font-size: 10px; }
+@media(max-width:580px) {
+  .current-user { display:none; }
+  .permission-layout { grid-template-columns:1fr; }
+  .permission-users { max-height:180px; overflow:auto; border-right:0; border-bottom:1px solid var(--line); }
+}

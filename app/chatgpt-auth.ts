@@ -6,6 +6,8 @@ export type ChatGPTUser = {
   displayName: string;
   email: string;
   fullName: string | null;
+  role: 'super_admin' | 'admin' | 'user';
+  permissionId: string;
 };
 
 const USER_ID_HEADER = 'oai-authenticated-user-id';
@@ -20,20 +22,24 @@ const CALLBACK_PATH = '/callback';
 
 export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
   const requestHeaders = await headers();
-  const userId = requestHeaders.get(USER_ID_HEADER);
-  const email = requestHeaders.get(USER_EMAIL_HEADER);
-  if (!userId || !email) {
-    const gatewayUserId = requestHeaders.get('x-auth-user-id');
-    const gatewayUser = requestHeaders.get('x-auth-user');
-    if (!gatewayUserId || !gatewayUser) return null;
-
+  const gatewayUserId = requestHeaders.get('x-auth-user-id');
+  const gatewayUser = requestHeaders.get('x-auth-user');
+  if (gatewayUserId && gatewayUser) {
+    const rawRole = requestHeaders.get('x-auth-role');
+    const role = rawRole === 'super_admin' || rawRole === 'admin' ? rawRole : 'user';
     return {
       userId: gatewayUserId,
       displayName: gatewayUser,
       email: gatewayUser,
       fullName: gatewayUser,
+      role,
+      permissionId: requestHeaders.get('x-auth-permission') ?? '',
     };
   }
+
+  const userId = requestHeaders.get(USER_ID_HEADER);
+  const email = requestHeaders.get(USER_EMAIL_HEADER);
+  if (!userId || !email) return null;
 
   const encodedFullName = requestHeaders.get(USER_FULL_NAME_HEADER);
   const fullName =
@@ -47,7 +53,13 @@ export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
     displayName: fullName ?? email,
     email,
     fullName,
+    role: 'super_admin',
+    permissionId: '',
   };
+}
+
+export function isAdminRole(role: ChatGPTUser['role']): boolean {
+  return role === 'super_admin' || role === 'admin';
 }
 
 export async function requireChatGPTUser(

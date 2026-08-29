@@ -7,6 +7,8 @@ const sts = new STSClient({});
 const accountsTable = process.env.ACCOUNTS_TABLE;
 const groupsTable = process.env.GROUPS_TABLE;
 const operationsAccountId = process.env.OPS_ACCOUNT_ID;
+const ADMIN_ROLES = new Set(["super_admin", "admin"]);
+const UNGROUPED = "__ungrouped";
 
 function response(statusCode, body) {
   return { statusCode, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }, body: JSON.stringify(body) };
@@ -23,6 +25,39 @@ function parseBody(event) {
   if (!event.body) return {};
   const raw = event.isBase64Encoded ? Buffer.from(event.body, "base64").toString("utf8") : event.body;
   return JSON.parse(raw);
+}
+
+function requestIdentity(event) {
+  const headers = event.headers || {};
+  const userId = String(headers["x-auth-user-id"] || "").trim();
+  const userName = String(headers["x-auth-user"] || "").trim();
+  const rawRole = String(headers["x-auth-role"] || "user").trim();
+  if (!userId || !userName) { const error = new Error("ITSM identity is missing"); error.statusCode = 401; throw error; }
+  return { userId, userName, role: ADMIN_ROLES.has(rawRole) ? rawRole : "user", permissionId: String(headers["x-auth-permission"] || "") };
+}
+
+function requireAdmin(identity) {
+  if (!ADMIN_ROLES.has(identity.role)) { const error = new Error("Administrator permission required"); error.statusCode = 403; throw error; }
+}
+
+async function rememberIdentity(identity) {
+  await dynamodb.send(new PutItemCommand({
+    TableName: groupsTable,
+    Item: {
+      groupId: { S: `user#${identity.userId}` }, itemType: { S: "user" }, userId: { S: identity.userId },
+      userName: { S: identity.userName }, role: { S: identity.role }, lastSeenAt: { S: new Date().toISOString() },
+    },
+  }));
+}
+
+async function allowedGroupIds(identity) {
+  if (ADMIN_ROLES.has(identity.role)) return null;
+  const result = await dynamodb.send(new ScanCommand({
+    TableName: groupsTable,
+    FilterExpression: "itemType = :type AND userId = :userId",
+    ExpressionAttributeValues: { ":type": { S: "permission" }, ":userId": { S: identity.userId } },
+  }));
+  return new Set((result.Items || []).map((item) => item.grantedGroupId?.S).filter(Boolean));
 }
 
 function normalizeAccount(body) {
@@ -43,12 +78,13 @@ async function ensureGroup(groupId) {
   if (!result.Item) throw new Error("Group does not exist");
 }
 
-async function listAccounts() {
+async function listAccounts(identity) {
   const result = await dynamodb.send(new ScanCommand({
     TableName: accountsTable,
     ProjectionExpression: "accountId, #name, remark, #region, groupId, createdAt, updatedAt",
     ExpressionAttributeNames: { "#name": "name", "#region": "region" },
   }));
+  const access = await allowedGroupIds(identity);
   return (result.Items || []).map((item) => ({
     accountId: item.accountId.S,
     remark: item.remark?.S || item.name?.S || item.accountId.S,
@@ -56,7 +92,8 @@ async function listAccounts() {
     groupId: item.groupId?.S || "",
     createdAt: item.createdAt?.S,
     updatedAt: item.updatedAt?.S,
-  })).sort((a, b) => String(a.name || a.remark || a.accountId || "").localeCompare(String(b.name || b.remark || b.accountId || ""), "zh-CN"));
+  })).filter((account) => !access || access.has(account.groupId || UNGROUPED))
+    .sort((a, b) => String(a.name || a.remark || a.accountId || "").localeCompare(String(b.name || b.remark || b.accountId || ""), "zh-CN"));
 }
 
 async function saveAccount(body) {
@@ -111,11 +148,13 @@ async function deleteAccount(body) {
   return { accountId };
 }
 
-async function listGroups() {
+async function listGroups(identity) {
   const result = await dynamodb.send(new ScanCommand({ TableName: groupsTable }));
-  return (result.Items || []).map((item) => ({
+  const access = await allowedGroupIds(identity);
+  return (result.Items || []).filter((item) => item.name?.S && !item.itemType?.S).map((item) => ({
     groupId: item.groupId.S, name: item.name.S, createdAt: item.createdAt?.S,
-  })).sort((a, b) => String(a.name || a.groupId || "").localeCompare(String(b.name || b.groupId || ""), "zh-CN"));
+  })).filter((group) => !access || access.has(group.groupId))
+    .sort((a, b) => String(a.name || a.groupId || "").localeCompare(String(b.name || b.groupId || ""), "zh-CN"));
 }
 
 async function createGroup(body) {
@@ -136,7 +175,7 @@ async function getAccount(accountId) {
   return { accountId: result.Item.accountId.S, name: result.Item.name.S, region: result.Item.region.S };
 }
 
-async function createConsoleLogin(body) {
+async function createConsoleLogin(identity, body) {
   const accountId = String(body.accountId || "").trim();
   const access = body.access === "admin" ? "admin" : "operations";
   if (!/^\d{12}$/.test(accountId)) throw new Error("Invalid AWS account ID");
@@ -145,6 +184,10 @@ async function createConsoleLogin(body) {
   }
   const account = await getAccount(accountId);
   if (!account) { const error = new Error("Account is not registered"); error.statusCode = 404; throw error; }
+  const accessGroups = await allowedGroupIds(identity);
+  const accountRecord = await dynamodb.send(new GetItemCommand({ TableName: accountsTable, Key: { accountId: { S: accountId } }, ConsistentRead: true }));
+  const accountGroupId = accountRecord.Item?.groupId?.S || UNGROUPED;
+  if (accessGroups && !accessGroups.has(accountGroupId)) { const error = new Error("This account group is not assigned to you"); error.statusCode = 403; throw error; }
   const roleName = access === "admin" ? "TontianAdminRole" : "TontianOperationsRole";
   const assumed = await sts.send(new AssumeRoleCommand({ RoleArn: `arn:aws:iam::${accountId}:role/${roleName}`, RoleSessionName: `tontian-web-${Date.now()}`, DurationSeconds: 3600 }));
   const credentials = assumed.Credentials;
@@ -158,19 +201,62 @@ async function createConsoleLogin(body) {
   return { loginUrl, expiresIn: 3600, accountId, roleName };
 }
 
+async function listPermissions(identity) {
+  requireAdmin(identity);
+  const result = await dynamodb.send(new ScanCommand({ TableName: groupsTable }));
+  const users = new Map();
+  for (const item of result.Items || []) {
+    if (item.itemType?.S === "user") users.set(item.userId.S, { userId: item.userId.S, userName: item.userName?.S || item.userId.S, role: item.role?.S || "user", groupIds: [] });
+  }
+  for (const item of result.Items || []) {
+    if (item.itemType?.S !== "permission") continue;
+    const userId = item.userId?.S;
+    if (!userId) continue;
+    if (!users.has(userId)) users.set(userId, { userId, userName: item.userName?.S || userId, role: "user", groupIds: [] });
+    users.get(userId).groupIds.push(item.grantedGroupId.S);
+  }
+  return [...users.values()].sort((a, b) => a.userName.localeCompare(b.userName, "zh-CN"));
+}
+
+async function savePermissions(identity, body) {
+  requireAdmin(identity);
+  const targetUserId = String(body.userId || "").trim();
+  const targetUserName = String(body.userName || targetUserId).trim();
+  const requested = [...new Set(Array.isArray(body.groupIds) ? body.groupIds.map((value) => String(value).trim()).filter(Boolean) : [])];
+  if (!targetUserId || targetUserId.length > 200) throw new Error("Invalid user ID");
+  const existingGroups = await dynamodb.send(new ScanCommand({ TableName: groupsTable }));
+  const validGroups = new Set((existingGroups.Items || []).filter((item) => item.name?.S && !item.itemType?.S).map((item) => item.groupId.S));
+  validGroups.add(UNGROUPED);
+  if (requested.some((groupId) => !validGroups.has(groupId))) throw new Error("Invalid group permission");
+  const previous = (existingGroups.Items || []).filter((item) => item.itemType?.S === "permission" && item.userId?.S === targetUserId);
+  await Promise.all(previous.map((item) => dynamodb.send(new DeleteItemCommand({ TableName: groupsTable, Key: { groupId: { S: item.groupId.S } } }))));
+  await Promise.all(requested.map((grantedGroupId) => {
+    const key = crypto.createHash("sha256").update(`${targetUserId}\0${grantedGroupId}`).digest("hex");
+    return dynamodb.send(new PutItemCommand({ TableName: groupsTable, Item: {
+      groupId: { S: `permission#${key}` }, itemType: { S: "permission" }, userId: { S: targetUserId },
+      userName: { S: targetUserName }, grantedGroupId: { S: grantedGroupId }, updatedAt: { S: new Date().toISOString() },
+    } }));
+  }));
+  return { userId: targetUserId, userName: targetUserName, groupIds: requested };
+}
+
 export const handler = async (event) => {
   try {
     if (!authorized(event)) return response(401, { error: "Unauthorized" });
     const method = event.requestContext?.http?.method || event.httpMethod;
     const path = event.rawPath || event.path || "/";
     if (method === "GET" && path === "/health") return response(200, { ok: true, accountId: operationsAccountId });
-    if (method === "GET" && path === "/accounts") return response(200, { accounts: await listAccounts() });
-    if (method === "POST" && path === "/accounts") return response(201, { account: await saveAccount(parseBody(event)) });
-    if (method === "PATCH" && path === "/accounts") return response(200, { account: await updateAccount(parseBody(event)) });
-    if (method === "DELETE" && path === "/accounts") return response(200, { account: await deleteAccount(parseBody(event)) });
-    if (method === "GET" && path === "/groups") return response(200, { groups: await listGroups() });
-    if (method === "POST" && path === "/groups") return response(201, { group: await createGroup(parseBody(event)) });
-    if (method === "POST" && path === "/console-login") return response(200, await createConsoleLogin(parseBody(event)));
+    const identity = requestIdentity(event);
+    await rememberIdentity(identity);
+    if (method === "GET" && path === "/accounts") return response(200, { accounts: await listAccounts(identity) });
+    if (method === "POST" && path === "/accounts") { requireAdmin(identity); return response(201, { account: await saveAccount(parseBody(event)) }); }
+    if (method === "PATCH" && path === "/accounts") { requireAdmin(identity); return response(200, { account: await updateAccount(parseBody(event)) }); }
+    if (method === "DELETE" && path === "/accounts") { requireAdmin(identity); return response(200, { account: await deleteAccount(parseBody(event)) }); }
+    if (method === "GET" && path === "/groups") return response(200, { groups: await listGroups(identity) });
+    if (method === "POST" && path === "/groups") { requireAdmin(identity); return response(201, { group: await createGroup(parseBody(event)) }); }
+    if (method === "GET" && path === "/permissions") return response(200, { users: await listPermissions(identity) });
+    if (method === "POST" && path === "/permissions") return response(200, { user: await savePermissions(identity, parseBody(event)) });
+    if (method === "POST" && path === "/console-login") return response(200, await createConsoleLogin(identity, parseBody(event)));
     return response(404, { error: "Not found" });
   } catch (error) {
     console.error(error);

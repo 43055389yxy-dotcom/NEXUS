@@ -7,10 +7,12 @@ type AccountRecord = { accountId: string; remark?: string; name?: string; region
 type GroupRecord = { groupId: string; name: string };
 type ManagedAccount = CloudAccount & { groupId: string };
 type NewAccount = { remark: string; accountId: string; region: string; groupId: string };
+type PermissionUser = { userId: string; userName: string; role: string; groupIds: string[] };
 const OPS_ACCOUNT_ID = '590184009438';
 const regions = ['us-east-1', 'us-west-2', 'ap-southeast-1', 'ap-northeast-1', 'eu-west-1'];
 
-export function CloudAccessDashboard(_: { userName: string; userEmail: string }) {
+export function CloudAccessDashboard({ userName, userRole }: { userName: string; userRole: 'super_admin' | 'admin' | 'user' }) {
+  const isAdmin = userRole === 'super_admin' || userRole === 'admin';
   const [accounts, setAccounts] = useState<ManagedAccount[]>([]);
   const [groups, setGroups] = useState<GroupRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -28,6 +30,10 @@ export function CloudAccessDashboard(_: { userName: string; userEmail: string })
   const [launching, setLaunching] = useState(false);
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState('');
+  const [showPermissions, setShowPermissions] = useState(false);
+  const [permissionUsers, setPermissionUsers] = useState<PermissionUser[]>([]);
+  const [selectedPermissionUser, setSelectedPermissionUser] = useState('');
+  const [permissionGroupIds, setPermissionGroupIds] = useState<string[]>([]);
 
   useEffect(() => {
     if (!activeMenu) return;
@@ -66,12 +72,52 @@ export function CloudAccessDashboard(_: { userName: string; userEmail: string })
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === '/' && !isTypingTarget(event.target)) { event.preventDefault(); searchRef.current?.focus(); }
-      if (event.key.toLowerCase() === 'n' && !isTypingTarget(event.target)) { event.preventDefault(); setShowAdd(true); }
-      if (event.key === 'Escape') { setShowAdd(false); setShowAddGroup(false); setEditing(null); setDeleting(null); setActiveMenu(''); }
+      if (isAdmin && event.key.toLowerCase() === 'n' && !isTypingTarget(event.target)) { event.preventDefault(); setShowAdd(true); }
+      if (event.key === 'Escape') { setShowAdd(false); setShowAddGroup(false); setShowPermissions(false); setEditing(null); setDeleting(null); setActiveMenu(''); }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
+  }, [isAdmin]);
+
+  async function openPermissions() {
+    setShowPermissions(true);
+    setSaving(true);
+    try {
+      const response = await fetch('/api/permissions', { cache: 'no-store' });
+      const payload = await response.json() as { users?: PermissionUser[]; error?: string };
+      if (!response.ok) throw new Error(payload.error ?? '权限读取失败');
+      const users = payload.users ?? [];
+      setPermissionUsers(users);
+      const first = users.find((item) => item.role === 'user') ?? users[0];
+      setSelectedPermissionUser(first?.userId ?? '');
+      setPermissionGroupIds(first?.groupIds ?? []);
+    } catch (error) { setNotice(error instanceof Error ? error.message : '权限读取失败'); }
+    finally { setSaving(false); }
+  }
+
+  function choosePermissionUser(userId: string) {
+    const user = permissionUsers.find((item) => item.userId === userId);
+    setSelectedPermissionUser(userId);
+    setPermissionGroupIds(user?.groupIds ?? []);
+  }
+
+  function toggleGroupPermission(groupId: string) {
+    setPermissionGroupIds((current) => current.includes(groupId) ? current.filter((item) => item !== groupId) : [...current, groupId]);
+  }
+
+  async function saveUserPermissions() {
+    const target = permissionUsers.find((item) => item.userId === selectedPermissionUser);
+    if (!target) return;
+    setSaving(true);
+    try {
+      const response = await fetch('/api/permissions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: target.userId, userName: target.userName, groupIds: permissionGroupIds }) });
+      const payload = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? '权限保存失败');
+      setPermissionUsers((current) => current.map((item) => item.userId === target.userId ? { ...item, groupIds: permissionGroupIds } : item));
+      setNotice('分组权限已保存');
+    } catch (error) { setNotice(error instanceof Error ? error.message : '权限保存失败'); }
+    finally { setSaving(false); }
+  }
 
   useEffect(() => {
     if (!notice) return;
@@ -217,18 +263,18 @@ export function CloudAccessDashboard(_: { userName: string; userEmail: string })
       <header className="console-header">
         <a className="console-brand" href="#top"><span>N</span><strong>NEXUS</strong><small>AWS 账号管理</small></a>
         <div className="header-search"><span>⌕</span><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、账号 ID、区域" /><kbd>/</kbd></div>
-        <div className="header-actions"><button className="icon-button" onClick={() => void loadData()} aria-label="刷新" title="刷新">↻</button><button className="add-button" onClick={() => setShowAdd(true)}><span>+</span> 添加账号</button></div>
+        <div className="header-actions"><span className="current-user">{userName}</span><button className="icon-button" onClick={() => void loadData()} aria-label="刷新" title="刷新">↻</button>{isAdmin && <button className="permission-button" onClick={() => void openPermissions()}>权限设置</button>}{isAdmin && <button className="add-button" onClick={() => setShowAdd(true)}><span>+</span> 添加账号</button>}</div>
       </header>
 
       <div className="platform-layout" id="top">
         <aside className="group-sidebar">
-          <div className="sidebar-title"><h2>账号分组</h2><button onClick={() => setShowAddGroup(true)} aria-label="添加分组">+</button></div>
+          <div className="sidebar-title"><h2>账号分组</h2>{isAdmin && <button onClick={() => setShowAddGroup(true)} aria-label="添加分组">+</button>}</div>
           <nav className="group-list">
             <button className={selectedGroup === 'all' ? 'active' : ''} onClick={() => setSelectedGroup('all')}><span><i className="folder all" />全部账号</span><b>{accounts.length}</b></button>
-            {groups.map((group) => <button key={group.groupId} className={selectedGroup === group.groupId ? 'active' : ''} onClick={() => setSelectedGroup(group.groupId)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const accountId = event.dataTransfer.getData('text/account-id'); if (accountId) void changeGroup(accountId, group.groupId); }}><span><i className="folder" />{group.name}</span><b>{groupCount(group.groupId)}</b></button>)}
-            <button className={selectedGroup === 'ungrouped' ? 'active' : ''} onClick={() => setSelectedGroup('ungrouped')} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const accountId = event.dataTransfer.getData('text/account-id'); if (accountId) void changeGroup(accountId, ''); }}><span><i className="folder empty" />未分组</span><b>{groupCount('ungrouped')}</b></button>
+            {groups.map((group) => <button key={group.groupId} className={selectedGroup === group.groupId ? 'active' : ''} onClick={() => setSelectedGroup(group.groupId)} onDragOver={(event) => { if (isAdmin) event.preventDefault(); }} onDrop={(event) => { if (!isAdmin) return; event.preventDefault(); const accountId = event.dataTransfer.getData('text/account-id'); if (accountId) void changeGroup(accountId, group.groupId); }}><span><i className="folder" />{group.name}</span><b>{groupCount(group.groupId)}</b></button>)}
+            {(isAdmin || accounts.some((account) => !account.groupId)) && <button className={selectedGroup === 'ungrouped' ? 'active' : ''} onClick={() => setSelectedGroup('ungrouped')} onDragOver={(event) => { if (isAdmin) event.preventDefault(); }} onDrop={(event) => { if (!isAdmin) return; event.preventDefault(); const accountId = event.dataTransfer.getData('text/account-id'); if (accountId) void changeGroup(accountId, ''); }}><span><i className="folder empty" />未分组</span><b>{groupCount('ungrouped')}</b></button>}
           </nav>
-          <button className="sidebar-add" onClick={() => setShowAddGroup(true)}><span>＋</span>新建分组</button>
+          {isAdmin && <button className="sidebar-add" onClick={() => setShowAddGroup(true)}><span>＋</span>新建分组</button>}
         </aside>
 
         <section className="console-content">
@@ -241,10 +287,10 @@ export function CloudAccessDashboard(_: { userName: string; userEmail: string })
           {!loading && !loadError && (
             <div className="accounts-layout">
               {visibleAccounts.map((account, index) => (
-                <article className="account-tile clickable note-only" key={account.id} style={{ animationDelay: `${index * 55}ms` }} onClick={() => launchConsole(account)} onKeyDown={(event) => { if (event.key === 'Enter') launchConsole(account); }} onDragStart={(event) => { event.dataTransfer.setData('text/account-id', account.id); event.dataTransfer.effectAllowed = 'move'; }} draggable role="button" tabIndex={0} aria-label={`进入 ${account.name} AWS 控制台`} title="点击进入 AWS，拖动可调整分组">
+                <article className="account-tile clickable note-only" key={account.id} style={{ animationDelay: `${index * 55}ms` }} onClick={() => launchConsole(account)} onKeyDown={(event) => { if (event.key === 'Enter') launchConsole(account); }} onDragStart={(event) => { if (!isAdmin) return; event.dataTransfer.setData('text/account-id', account.id); event.dataTransfer.effectAllowed = 'move'; }} draggable={isAdmin} role="button" tabIndex={0} aria-label={`进入 ${account.name} AWS 控制台`} title={isAdmin ? '点击进入 AWS，拖动可调整分组' : '点击进入 AWS'}>
                   <h2>{account.name}</h2>
-                  <button className="card-menu-button" onClick={(event) => { event.stopPropagation(); setActiveMenu((current) => current === account.id ? '' : account.id); }} onMouseDown={(event) => event.stopPropagation()} aria-label="账号操作">•••</button>
-                  {activeMenu === account.id && <div className="card-menu" onClick={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()}><button onClick={() => openEdit(account)}>编辑备注</button><button className="danger" onClick={() => { setActiveMenu(''); setDeleting(account); }}>删除记录</button></div>}
+                  {isAdmin && <button className="card-menu-button" onClick={(event) => { event.stopPropagation(); setActiveMenu((current) => current === account.id ? '' : account.id); }} onMouseDown={(event) => event.stopPropagation()} aria-label="账号操作">•••</button>}
+                  {isAdmin && activeMenu === account.id && <div className="card-menu" onClick={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()}><button onClick={() => openEdit(account)}>编辑备注</button><button className="danger" onClick={() => { setActiveMenu(''); setDeleting(account); }}>删除记录</button></div>}
                 </article>
               ))}
             </div>
@@ -254,6 +300,8 @@ export function CloudAccessDashboard(_: { userName: string; userEmail: string })
       </div>
 
       {showAddGroup && <div className="dialog-layer" onMouseDown={(event) => event.target === event.currentTarget && setShowAddGroup(false)}><section className="group-dialog" role="dialog" aria-modal="true"><button className="dialog-close" onClick={() => setShowAddGroup(false)}>×</button><h2>新建分组</h2><form onSubmit={(event) => void addGroup(event)}><label><span>分组名称</span><input autoFocus value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="例如：新代付组" maxLength={50} /></label><div className="dialog-actions"><button type="button" className="cancel" onClick={() => setShowAddGroup(false)}>取消</button><button className="save" disabled={saving || !groupName.trim()}>{saving ? '创建中...' : '创建'}</button></div></form></section></div>}
+
+      {showPermissions && <div className="dialog-layer" onMouseDown={(event) => event.target === event.currentTarget && setShowPermissions(false)}><section className="permission-dialog" role="dialog" aria-modal="true"><button className="dialog-close" onClick={() => setShowPermissions(false)}>×</button><div className="permission-heading"><span>ACCESS CONTROL</span><h2>分组权限</h2><p>选择用户可以查看和进入的账号分组</p></div>{permissionUsers.length === 0 ? <div className="permission-empty">用户首次打开 NEXUS 后会出现在这里</div> : <div className="permission-layout"><div className="permission-users">{permissionUsers.map((item) => <button key={item.userId} className={selectedPermissionUser === item.userId ? 'active' : ''} onClick={() => choosePermissionUser(item.userId)}><span>{item.userName.slice(0, 1).toUpperCase()}</span><div><strong>{item.userName}</strong><small>{item.role === 'user' ? item.userId : '管理员'}</small></div></button>)}</div><div className="permission-groups"><div className="permission-groups-head"><strong>可见分组</strong><span>{permissionGroupIds.length} 项</span></div><label><input type="checkbox" checked={permissionGroupIds.includes('__ungrouped')} onChange={() => toggleGroupPermission('__ungrouped')} /><span><i className="folder empty" />未分组</span></label>{groups.map((group) => <label key={group.groupId}><input type="checkbox" checked={permissionGroupIds.includes(group.groupId)} onChange={() => toggleGroupPermission(group.groupId)} /><span><i className="folder" />{group.name}</span></label>)}</div></div>}<div className="dialog-actions"><button className="cancel" onClick={() => setShowPermissions(false)}>关闭</button><button className="save" disabled={saving || !selectedPermissionUser} onClick={() => void saveUserPermissions()}>{saving ? '保存中...' : '保存权限'}</button></div></section></div>}
 
       {showAdd && (
         <div className="dialog-layer" onMouseDown={(event) => event.target === event.currentTarget && setShowAdd(false)}>
