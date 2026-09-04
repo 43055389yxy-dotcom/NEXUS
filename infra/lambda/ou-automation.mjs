@@ -7,7 +7,7 @@ const sts = new STSClient({});
 const accountsTable = process.env.ACCOUNTS_TABLE;
 const groupsTable = process.env.GROUPS_TABLE;
 const automationRole = "TontianOrganizationAutomationRole";
-const targetGroupNames = new Set((process.env.OU_AUTOMATION_GROUP_NAMES || "CMA架构,老代付架构").split(",").map((name) => name.trim()).filter(Boolean));
+const targetGroupNames = new Set((process.env.OU_AUTOMATION_GROUP_NAMES || "CMA组,老代付组").split(",").map((name) => name.trim()).filter(Boolean));
 const temporaryName = "临时";
 const restrictedName = "禁止 SP/RI";
 const policyDocuments = {
@@ -17,6 +17,28 @@ const policyDocuments = {
 
 function fail(message, statusCode = 400) { const error = new Error(message); error.statusCode = statusCode; throw error; }
 function normalized(value) { return String(value || "").trim().replace(/\s+/g, " ").toLocaleLowerCase("zh-CN"); }
+function compactName(value) { return normalized(value).replace(/[^\p{L}\p{N}]+/gu, ""); }
+
+function editDistance(left, right) {
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let row = 1; row <= left.length; row += 1) {
+    const current = [row];
+    for (let column = 1; column <= right.length; column += 1) current[column] = Math.min(current[column - 1] + 1, previous[column] + 1, previous[column - 1] + (left[row - 1] === right[column - 1] ? 0 : 1));
+    previous.splice(0, previous.length, ...current);
+  }
+  return previous[right.length];
+}
+
+function similarNameScore(value, target, kind) {
+  const name = compactName(value);
+  const expected = compactName(target);
+  if (name === expected) return 100;
+  if (name.includes(expected) || expected.includes(name)) return 90;
+  if (kind === "temporary" && ["临时", "暂时", "temporary", "temp"].some((alias) => name.includes(alias))) return 75;
+  if (kind === "restricted" && ((name.includes("spri") && ["禁止", "禁用", "deny", "block", "no"].some((alias) => name.includes(alias))) || ((name.includes("预留") || name.includes("节省计划")) && (name.includes("禁止") || name.includes("禁用"))))) return 75;
+  const distance = editDistance(name, expected);
+  return distance <= Math.max(2, Math.floor(expected.length * 0.3)) ? 60 : 0;
+}
 
 async function requireAccount(accountId) {
   if (!/^\d{12}$/.test(String(accountId || ""))) fail("Invalid AWS account ID");
@@ -25,8 +47,10 @@ async function requireAccount(accountId) {
   const groupId = accountResult.Item.groupId?.S || "";
   const groupResult = groupId ? await dynamodb.send(new GetItemCommand({ TableName: groupsTable, Key: { groupId: { S: groupId } }, ConsistentRead: true })) : {};
   const groupName = groupResult.Item?.name?.S || "";
-  if (!targetGroupNames.has(groupName)) fail("Only CMA架构 and 老代付架构 accounts support OU automation");
-  return { accountId, remark: accountResult.Item.remark?.S || accountResult.Item.name?.S || accountId, groupId, groupName, temporaryOuId: accountResult.Item.temporaryOuId?.S || "", restrictedOuId: accountResult.Item.restrictedOuId?.S || "", lastRunAt: accountResult.Item.ouAutomationLastRunAt?.S || "", lastStatus: accountResult.Item.ouAutomationLastStatus?.S || "" };
+  if (!targetGroupNames.has(groupName)) fail("Only CMA组 and 老代付组 accounts support OU automation");
+  const temporaryOuId = accountResult.Item.temporaryOuId?.S || "";
+  const restrictedOuId = accountResult.Item.restrictedOuId?.S || "";
+  return { accountId, remark: accountResult.Item.remark?.S || accountResult.Item.name?.S || accountId, groupId, groupName, temporaryOuId, restrictedOuId, configured: Boolean(temporaryOuId && restrictedOuId), lastRunAt: accountResult.Item.ouAutomationLastRunAt?.S || "", lastStatus: accountResult.Item.ouAutomationLastStatus?.S || "" };
 }
 
 async function listAccounts() {
@@ -58,19 +82,17 @@ async function inspect(accountId) {
   const account = await requireAccount(accountId);
   const organization = await context(account);
   const ous = await rootOus(organization.client, organization.rootId);
-  const ids = new Set(ous.map((ou) => ou.id));
-  const exact = (name) => ous.find((ou) => normalized(ou.name) === normalized(name))?.id || "";
-  return { ...organization, account, ous, temporaryOuId: (ids.has(account.temporaryOuId) ? account.temporaryOuId : "") || exact(temporaryName), restrictedOuId: (ids.has(account.restrictedOuId) ? account.restrictedOuId : "") || exact(restrictedName) };
+  const temporaryOu = await detectExistingOu(organization.client, ous, account.temporaryOuId, temporaryName, "temporary");
+  const restrictedOu = await detectExistingOu(organization.client, ous, account.restrictedOuId, restrictedName, "restricted");
+  return { ...organization, account, ous, temporaryOu, restrictedOu, temporaryOuId: temporaryOu?.id || "", restrictedOuId: restrictedOu?.id || "" };
 }
 
-function publicDiscovery(value) { return { account: value.account, ous: value.ous, temporaryOuId: value.temporaryOuId, restrictedOuId: value.restrictedOuId }; }
+function publicDiscovery(value) { return { account: value.account, temporaryOu: value.temporaryOu || null, restrictedOu: value.restrictedOu || null, temporaryOuId: value.temporaryOuId, restrictedOuId: value.restrictedOuId }; }
 
-async function resolveOu(client, rootId, ous, selectedId, name) {
-  if (selectedId) return ous.find((ou) => ou.id === selectedId) || fail(`选择的 ${name} OU 不存在或不在 Root 下`);
-  const exact = ous.find((ou) => normalized(ou.name) === normalized(name));
-  if (exact) return exact;
+async function resolveOu(client, rootId, detected, name) {
+  if (detected) return detected;
   const created = (await client.send(new CreateOrganizationalUnitCommand({ ParentId: rootId, Name: name }))).OrganizationalUnit;
-  return { id: created.Id, name: created.Name };
+  return { id: created.Id, name: created.Name, match: "created" };
 }
 
 async function listScps(client, rootId) {
@@ -82,6 +104,60 @@ async function listScps(client, rootId) {
 }
 
 function canonical(content) { try { return JSON.stringify(JSON.parse(content)); } catch {} try { return JSON.stringify(JSON.parse(decodeURIComponent(content))); } catch {} return String(content || ""); }
+
+function policyDocument(content) {
+  try { return JSON.parse(content); } catch {}
+  try { return JSON.parse(decodeURIComponent(content)); } catch {}
+  return null;
+}
+
+function sameSet(left, right) { return left.size === right.size && [...left].every((value) => right.has(value)); }
+
+async function ouPolicyProfile(client, targetId) {
+  const attached = [];
+  let NextToken;
+  do { const page = await client.send(new ListPoliciesForTargetCommand({ TargetId: targetId, Filter: "SERVICE_CONTROL_POLICY", NextToken })); attached.push(...(page.Policies || [])); NextToken = page.NextToken; } while (NextToken);
+  const denyActions = new Set();
+  let compatible = true;
+  let customPolicies = 0;
+  for (const policy of attached) {
+    if (policy.AwsManaged && policy.Name === "FullAWSAccess") continue;
+    customPolicies += 1;
+    const document = policy.Id ? policyDocument((await client.send(new DescribePolicyCommand({ PolicyId: policy.Id }))).Policy?.Content) : null;
+    const statements = Array.isArray(document?.Statement) ? document.Statement : document?.Statement ? [document.Statement] : [];
+    if (!statements.length) { compatible = false; continue; }
+    for (const statement of statements) {
+      const resources = Array.isArray(statement.Resource) ? statement.Resource : [statement.Resource];
+      const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
+      if (statement.Effect !== "Deny" || statement.NotAction || statement.Condition || resources.length !== 1 || resources[0] !== "*" || actions.some((action) => typeof action !== "string")) { compatible = false; continue; }
+      for (const action of actions) denyActions.add(action.toLocaleLowerCase("en-US"));
+    }
+  }
+  return { fullAccess: attached.some((policy) => policy.AwsManaged && policy.Name === "FullAWSAccess"), customPolicies, compatible, denyActions };
+}
+
+async function detectExistingOu(client, ous, storedId, targetName, kind) {
+  const stored = storedId ? ous.find((ou) => ou.id === storedId) : null;
+  if (stored) return { ...stored, match: "saved" };
+  const exact = ous.find((ou) => normalized(ou.name) === normalized(targetName));
+  if (exact) return { ...exact, match: "exact" };
+  const requiredActions = new Set(kind === "restricted"
+    ? ["savingsplans:*", "ec2:purchasereservedinstancesoffering", "rds:purchasereserveddbinstancesoffering", "organizations:leaveorganization"]
+    : []);
+  const candidates = [];
+  for (const ou of ous) {
+    const score = similarNameScore(ou.name, targetName, kind);
+    if (!score) continue;
+    const profile = await ouPolicyProfile(client, ou.id);
+    const samePermissions = kind === "temporary"
+      ? profile.fullAccess && profile.customPolicies === 0
+      : profile.fullAccess && profile.compatible && sameSet(profile.denyActions, requiredActions);
+    if (samePermissions) candidates.push({ ...ou, match: "compatible", score });
+  }
+  candidates.sort((left, right) => right.score - left.score || left.name.localeCompare(right.name, "zh-CN"));
+  if (!candidates[0] || (candidates[1] && candidates[0].score === candidates[1].score)) return null;
+  return { id: candidates[0].id, name: candidates[0].name, match: candidates[0].match };
+}
 
 async function ensureScp(client, policies, name, document) {
   const content = JSON.stringify(document);
@@ -99,10 +175,9 @@ async function attach(client, targetId, policyId) {
   if (!policies.some((policy) => policy.Id === policyId)) await client.send(new AttachPolicyCommand({ PolicyId: policyId, TargetId: targetId }));
 }
 
-async function configureFromInspection(value, body) {
-  const temporaryOu = await resolveOu(value.client, value.rootId, value.ous, String(body.temporaryOuId || ""), temporaryName);
-  const ous = value.ous.some((ou) => ou.id === temporaryOu.id) ? value.ous : [...value.ous, temporaryOu];
-  const restrictedOu = await resolveOu(value.client, value.rootId, ous, String(body.restrictedOuId || ""), restrictedName);
+async function configureFromInspection(value) {
+  const temporaryOu = await resolveOu(value.client, value.rootId, value.temporaryOu, temporaryName);
+  const restrictedOu = await resolveOu(value.client, value.rootId, value.restrictedOu, restrictedName);
   if (temporaryOu.id === restrictedOu.id) fail("临时和禁止 SP/RI 必须对应两个不同的 OU");
   const policies = await listScps(value.client, value.rootId);
   const fullAccessId = policies.find((policy) => policy.Name === "FullAWSAccess")?.Id;
@@ -116,14 +191,11 @@ async function configureFromInspection(value, body) {
   return { accountId: value.account.accountId, temporaryOu, restrictedOu, configured: true, updatedAt };
 }
 
-async function configure(body) { const value = await inspect(String(body.accountId || "")); return configureFromInspection(value, body); }
+async function configure(body) { const value = await inspect(String(body.accountId || "")); return configureFromInspection(value); }
 
 async function initialize(accountId) {
   const value = await inspect(accountId);
-  const selected = new Set([value.temporaryOuId, value.restrictedOuId].filter(Boolean));
-  const unmatched = value.ous.filter((ou) => !selected.has(ou.id));
-  if ((!value.temporaryOuId || !value.restrictedOuId) && unmatched.length) return { mappingRequired: true, discovery: publicDiscovery(value) };
-  return { mappingRequired: false, configuration: await configureFromInspection(value, { temporaryOuId: value.temporaryOuId, restrictedOuId: value.restrictedOuId }) };
+  return { configuration: await configureFromInspection(value) };
 }
 
 async function organizationAccounts(client) { const result = []; let NextToken; do { const page = await client.send(new ListAccountsCommand({ NextToken })); result.push(...(page.Accounts || [])); NextToken = page.NextToken; } while (NextToken); return result; }
@@ -131,7 +203,7 @@ async function recordRun(accountId, status, message) { await dynamodb.send(new U
 
 async function reconcile(accountId) {
   const account = await requireAccount(accountId);
-  if (!account.restrictedOuId) fail("请先完成 OU 映射");
+  if (!account.restrictedOuId) fail("请先完成 OU 自动初始化");
   try {
     const organization = await context(account);
     const members = (await organizationAccounts(organization.client)).filter((member) => member.Id && member.Id !== organization.managementAccountId && member.Status !== "SUSPENDED" && member.State !== "SUSPENDED");
@@ -154,8 +226,7 @@ export async function runScheduledOuAutomation() {
   const accounts = await listAccounts();
   const results = [];
   for (const account of accounts) {
-    if (!account.configured) { results.push({ accountId: account.accountId, skipped: true, error: "OU mapping is not configured" }); continue; }
-    try { results.push(await reconcile(account.accountId)); } catch (error) { results.push({ accountId: account.accountId, error: error.message || "Reconciliation failed" }); }
+    try { if (!account.configured) await initialize(account.accountId); results.push(await reconcile(account.accountId)); } catch (error) { results.push({ accountId: account.accountId, error: error.message || "Reconciliation failed" }); }
   }
   return { accounts: results.length, results };
 }

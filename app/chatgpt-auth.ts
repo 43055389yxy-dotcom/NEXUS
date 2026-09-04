@@ -20,7 +20,18 @@ const SIGN_IN_PATH = '/signin-with-chatgpt';
 const SIGN_OUT_PATH = '/signout-with-chatgpt';
 const CALLBACK_PATH = '/callback';
 
+const LOCAL_DEVELOPMENT_USER: ChatGPTUser = {
+  userId: 'local-development-super-admin',
+  displayName: '本地超级管理员',
+  email: 'local-admin@nexus.local',
+  fullName: '本地超级管理员',
+  role: 'super_admin',
+  permissionId: 'local-development',
+};
+
 export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
+  if (process.env.NODE_ENV === 'development') return LOCAL_DEVELOPMENT_USER;
+
   const requestHeaders = await headers();
   const gatewayUserId = requestHeaders.get('x-auth-user-id');
   const gatewayUser = requestHeaders.get('x-auth-user');

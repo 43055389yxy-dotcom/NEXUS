@@ -70,7 +70,10 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
     }
   }
 
-  useEffect(() => { void loadData(); }, []);
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => void loadData());
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -173,7 +176,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
       const selectedGroupName = groups.find((group) => group.groupId === newAccount.groupId)?.name;
       setShowAdd(false);
       setNewAccount({ remark: '', accountId: '', region: 'us-east-1', groupId: selectedGroup !== 'all' && selectedGroup !== 'ungrouped' ? selectedGroup : '' });
-      if (selectedGroupName === 'CMA架构' || selectedGroupName === '老代付架构') await ouAutomationRef.current?.initializeAccount(accountId);
+      if (selectedGroupName === 'CMA组' || selectedGroupName === '老代付组') await ouAutomationRef.current?.initializeAccount(accountId);
       else setNotice(`${remark} 已添加`);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '保存失败');
