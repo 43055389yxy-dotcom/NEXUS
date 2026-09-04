@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { DeleteItemCommand, DynamoDBClient, GetItemCommand, PutItemCommand, ScanCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
 import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
+import { handleOuAutomationRequest, isOuAutomationScheduledEvent, runScheduledOuAutomation } from "./ou-automation.mjs";
 
 const dynamodb = new DynamoDBClient({});
 const sts = new STSClient({});
@@ -259,6 +260,7 @@ async function savePermissions(identity, body) {
 
 export const handler = async (event) => {
   try {
+    if (isOuAutomationScheduledEvent(event)) return runScheduledOuAutomation();
     if (!authorized(event)) return response(401, { error: "Unauthorized" });
     const method = event.requestContext?.http?.method || event.httpMethod;
     const path = event.rawPath || event.path || "/";
@@ -273,6 +275,7 @@ export const handler = async (event) => {
     if (method === "POST" && path === "/groups") { requireAdmin(identity); return response(201, { group: await createGroup(parseBody(event)) }); }
     if (method === "GET" && path === "/permissions") return response(200, { users: await listPermissions(identity) });
     if (method === "POST" && path === "/permissions") return response(200, { user: await savePermissions(identity, parseBody(event)) });
+    if ((method === "GET" || method === "POST") && path === "/ou-automation") return response(200, await handleOuAutomationRequest({ method, body: method === "POST" ? parseBody(event) : {}, identity }));
     if (method === "POST" && path === "/console-login") return response(200, await createConsoleLogin(identity, parseBody(event)));
     return response(404, { error: "Not found" });
   } catch (error) {

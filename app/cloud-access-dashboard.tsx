@@ -2,6 +2,8 @@
 
 import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { type CloudAccount } from './accounts';
+import { OuAutomationPanel, type OuAutomationHandle } from './ou-automation-panel';
+import { OU_AUTOMATION_PROVISION_FRAGMENT } from './ou-automation-provision';
 
 type AccountRecord = { accountId: string; remark?: string; name?: string; region: string; groupId?: string };
 type GroupRecord = { groupId: string; name: string };
@@ -45,6 +47,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
   const [notice, setNotice] = useState('');
   const [newAccount, setNewAccount] = useState<NewAccount>({ remark: '', accountId: '', region: 'us-east-1', groupId: '' });
   const searchRef = useRef<HTMLInputElement>(null);
+  const ouAutomationRef = useRef<OuAutomationHandle>(null);
 
   async function loadData() {
     setLoading(true);
@@ -167,9 +170,11 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
       const payload = await response.json() as { account?: AccountRecord; error?: string };
       if (!response.ok || !payload.account) throw new Error(payload.error ?? '保存失败');
       setAccounts((current) => [...current, toManagedAccount(payload.account as AccountRecord)]);
+      const selectedGroupName = groups.find((group) => group.groupId === newAccount.groupId)?.name;
       setShowAdd(false);
       setNewAccount({ remark: '', accountId: '', region: 'us-east-1', groupId: selectedGroup !== 'all' && selectedGroup !== 'ungrouped' ? selectedGroup : '' });
-      setNotice(`${remark} 已添加`);
+      if (selectedGroupName === 'CMA架构' || selectedGroupName === '老代付架构') await ouAutomationRef.current?.initializeAccount(accountId);
+      else setNotice(`${remark} 已添加`);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '保存失败');
     } finally { setSaving(false); }
@@ -257,7 +262,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
       <header className="console-header">
         <a className="console-brand" href="#top"><span>N</span><strong>NEXUS</strong><small>AWS 账号管理</small></a>
         <div className="header-search"><span>⌕</span><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、账号 ID、区域" /><kbd>/</kbd></div>
-        <div className="header-actions"><span className="current-user">{userName}</span><button className="icon-button" onClick={() => void loadData()} aria-label="刷新" title="刷新">↻</button>{isAdmin && <button className="permission-button" onClick={() => void openPermissions()}>权限设置</button>}{isAdmin && <button className="add-button" onClick={() => setShowAdd(true)}><span>+</span> 添加账号</button>}</div>
+        <div className="header-actions"><span className="current-user">{userName}</span><button className="icon-button" onClick={() => void loadData()} aria-label="刷新" title="刷新">↻</button>{isAdmin && <OuAutomationPanel ref={ouAutomationRef} onNotice={setNotice} />}{isAdmin && <button className="permission-button" onClick={() => void openPermissions()}>权限设置</button>}{isAdmin && <button className="add-button" onClick={() => setShowAdd(true)}><span>+</span> 添加账号</button>}</div>
       </header>
 
       <div className="platform-layout" id="top">
@@ -371,17 +376,25 @@ CURRENT_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
 if [ "$CURRENT_ACCOUNT_ID" = "$OPS_ACCOUNT_ID" ]; then echo "错误：不能在运维账号执行"; exit 1; fi
 
-cat >/tmp/tontian-trust-policy.json <<EOF_POLICY
+cat >/tmp/tontian-operations-trust.json <<EOF_POLICY
 {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::\${OPS_ACCOUNT_ID}:role/TontianConsoleBrokerRole"},"Action":"sts:AssumeRole"}]}
 EOF_POLICY
 
-for ROLE_NAME in TontianOperationsRole TontianAdminRole; do
-  if aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
-    aws iam update-assume-role-policy --role-name "$ROLE_NAME" --policy-document file:///tmp/tontian-trust-policy.json
-  else
-    aws iam create-role --role-name "$ROLE_NAME" --max-session-duration 3600 --assume-role-policy-document file:///tmp/tontian-trust-policy.json
-  fi
-done
+cat >/tmp/tontian-admin-trust.json <<EOF_ADMIN
+{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::\${OPS_ACCOUNT_ID}:root"},"Action":["sts:AssumeRole","sts:TagSession","sts:SetSourceIdentity"]}]}
+EOF_ADMIN
+
+if aws iam get-role --role-name TontianOperationsRole >/dev/null 2>&1; then
+  aws iam update-assume-role-policy --role-name TontianOperationsRole --policy-document file:///tmp/tontian-operations-trust.json
+else
+  aws iam create-role --role-name TontianOperationsRole --max-session-duration 3600 --assume-role-policy-document file:///tmp/tontian-operations-trust.json
+fi
+
+if aws iam get-role --role-name TontianAdminRole >/dev/null 2>&1; then
+  aws iam update-assume-role-policy --role-name TontianAdminRole --policy-document file:///tmp/tontian-admin-trust.json
+else
+  aws iam create-role --role-name TontianAdminRole --max-session-duration 3600 --assume-role-policy-document file:///tmp/tontian-admin-trust.json
+fi
 
 aws iam attach-role-policy --role-name TontianOperationsRole --policy-arn arn:aws:iam::aws:policy/ReadOnlyAccess
 aws iam attach-role-policy --role-name TontianOperationsRole --policy-arn arn:aws:iam::aws:policy/AWSBillingReadOnlyAccess
@@ -391,4 +404,5 @@ cat >/tmp/tontian-organization-operations.json <<'EOF_ORG'
 EOF_ORG
 aws iam put-role-policy --role-name TontianOperationsRole --policy-name TontianOrganizationOperations --policy-document file:///tmp/tontian-organization-operations.json
 aws iam attach-role-policy --role-name TontianAdminRole --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
+${OU_AUTOMATION_PROVISION_FRAGMENT}
 echo "账号接入完成：$CURRENT_ACCOUNT_ID"`;}
