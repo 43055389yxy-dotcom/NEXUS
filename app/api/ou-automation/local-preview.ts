@@ -37,8 +37,12 @@ export async function localOuAutomationPreview(user: ChatGPTUser, body?: Preview
 
   const account = accounts.find((item) => item.accountId === body.accountId);
   if ((body.action === 'discover' || body.action === 'initialize') && account) {
-    const discovery = { account, temporaryOu: null, restrictedOu: null, temporaryOuId: '', restrictedOuId: '' };
-    return NextResponse.json({ discovery, preview: true });
+    const confirmations = [
+      { kind: 'temporary', action: 'create', targetName: '临时' },
+      { kind: 'restricted', action: 'create', targetName: '禁止 SP/RI' },
+    ];
+    const discovery = { account, temporaryOu: null, restrictedOu: null, temporaryOuId: '', restrictedOuId: '', confirmations };
+    return NextResponse.json({ confirmationRequired: body.action === 'initialize', confirmations, discovery, members: [], preview: true });
   }
   if (!account && body.accountId) return NextResponse.json({ error: '未找到目标分组中的代付账号' }, { status: 404 });
 
