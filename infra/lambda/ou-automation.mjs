@@ -1,4 +1,4 @@
-import { DynamoDBClient, GetItemCommand, ScanCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, GetItemCommand, PutItemCommand, QueryCommand, ScanCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
 import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
 import { AttachPolicyCommand, CreateOrganizationalUnitCommand, CreatePolicyCommand, DescribeOrganizationCommand, DescribePolicyCommand, EnablePolicyTypeCommand, ListAccountsCommand, ListOrganizationalUnitsForParentCommand, ListParentsCommand, ListPoliciesCommand, ListPoliciesForTargetCommand, ListRootsCommand, MoveAccountCommand, OrganizationsClient, UpdatePolicyCommand } from "@aws-sdk/client-organizations";
 
@@ -6,6 +6,7 @@ const dynamodb = new DynamoDBClient({});
 const sts = new STSClient({});
 const accountsTable = process.env.ACCOUNTS_TABLE;
 const groupsTable = process.env.GROUPS_TABLE;
+const historyTable = process.env.OU_HISTORY_TABLE || "TontianOuAutomationHistory";
 const automationRole = "TontianOrganizationAutomationRole";
 const targetGroupNames = new Set((process.env.OU_AUTOMATION_GROUP_NAMES || "CMA组,老代付组").split(",").map((name) => name.trim()).filter(Boolean));
 const temporaryName = "临时";
@@ -214,6 +215,56 @@ async function initialize(accountId, options = {}) {
 }
 
 async function organizationAccounts(client) { const result = []; let NextToken; do { const page = await client.send(new ListAccountsCommand({ NextToken })); result.push(...(page.Accounts || [])); NextToken = page.NextToken; } while (NextToken); return result; }
+function parentName(value, parentId) {
+  if (parentId === value.rootId) return "未分组";
+  if (parentId === value.temporaryOuId) return temporaryName;
+  if (parentId === value.restrictedOuId) return restrictedName;
+  return value.ous.find((ou) => ou.id === parentId)?.name || "其他 OU";
+}
+
+async function recordOperation({ account, mode, status, checked, moved, skipped, message, movedAccounts = [] }) {
+  const occurredAt = new Date().toISOString();
+  const occurredAtId = `${occurredAt}#${mode}`;
+  const expiresAt = Math.floor(Date.now() / 1000) + (2 * 24 * 60 * 60);
+  try {
+    await dynamodb.send(new PutItemCommand({ TableName: historyTable, Item: {
+      payerAccountId: { S: account.accountId },
+      occurredAtId: { S: occurredAtId },
+      occurredAt: { S: occurredAt },
+      payerRemark: { S: account.remark },
+      mode: { S: mode },
+      status: { S: status },
+      checked: { N: String(checked || 0) },
+      moved: { N: String(moved || 0) },
+      skipped: { N: String(skipped || 0) },
+      message: { S: String(message || "").slice(0, 500) },
+      movedAccountsJson: { S: JSON.stringify(movedAccounts).slice(0, 300000) },
+      expiresAt: { N: String(expiresAt) },
+    } }));
+    return true;
+  } catch (error) {
+    console.error("Failed to record OU operation", { payerAccountId: account.accountId, mode, error: error?.message || error });
+    return false;
+  }
+}
+
+async function movementHistory(accountId) {
+  const account = await requireAccount(accountId);
+  const page = await dynamodb.send(new QueryCommand({ TableName: historyTable, KeyConditionExpression: "payerAccountId = :payer", ExpressionAttributeValues: { ":payer": { S: accountId } }, ScanIndexForward: false, Limit: 300 }));
+  const cutoff = Date.now() - (2 * 24 * 60 * 60 * 1000);
+  return (page.Items || []).filter((item) => new Date(item.occurredAt?.S || 0).getTime() >= cutoff).map((item) => ({
+    payerAccountId: item.payerAccountId?.S || accountId,
+    payerRemark: item.payerRemark?.S || account.remark,
+    occurredAt: item.occurredAt?.S || "",
+    mode: item.mode?.S || "automatic",
+    status: item.status?.S || "success",
+    checked: Number(item.checked?.N || 0),
+    moved: Number(item.moved?.N || 0),
+    skipped: Number(item.skipped?.N || 0),
+    message: item.message?.S || "",
+    movedAccounts: (() => { try { return JSON.parse(item.movedAccountsJson?.S || "[]"); } catch { return []; } })(),
+  }));
+}
 async function memberDirectory(value) {
   const ouNames = new Map(value.ous.map((ou) => [ou.id, ou.name]));
   const members = (await organizationAccounts(value.client)).filter((member) => member.Id && member.Id !== value.managementAccountId && member.Status !== "SUSPENDED" && member.State !== "SUSPENDED");
@@ -243,37 +294,58 @@ async function moveMember(body) {
   if (!member) fail("成员账号不属于当前 Organization", 404);
   const sourceParentId = (await value.client.send(new ListParentsCommand({ ChildId: memberAccountId }))).Parents?.[0]?.Id;
   if (!sourceParentId) fail("无法读取成员账号当前 OU");
-  if (sourceParentId !== destinationParentId) await value.client.send(new MoveAccountCommand({ AccountId: memberAccountId, SourceParentId: sourceParentId, DestinationParentId: destinationParentId }));
-  return { accountId: memberAccountId, destination, moved: sourceParentId !== destinationParentId };
+  let historyRecorded = false;
+  if (sourceParentId !== destinationParentId) {
+    await value.client.send(new MoveAccountCommand({ AccountId: memberAccountId, SourceParentId: sourceParentId, DestinationParentId: destinationParentId }));
+    historyRecorded = await recordOperation({ account: value.account, mode: "manual", status: "success", checked: 1, moved: 1, skipped: 0, message: `手动移动 ${member.Name || member.Id}`, movedAccounts: [{ accountId: member.Id, name: member.Name || member.Id, email: member.Email || "", sourceParentName: parentName(value, sourceParentId), destinationParentName: parentName(value, destinationParentId) }] });
+  }
+  return { accountId: memberAccountId, destination, moved: sourceParentId !== destinationParentId, historyRecorded };
 }
 async function recordRun(accountId, status, message) { await dynamodb.send(new UpdateItemCommand({ TableName: accountsTable, Key: { accountId: { S: accountId } }, UpdateExpression: "SET ouAutomationLastRunAt=:runAt, ouAutomationLastStatus=:status, ouAutomationLastMessage=:message", ExpressionAttributeValues: { ":runAt": { S: new Date().toISOString() }, ":status": { S: status }, ":message": { S: String(message || "").slice(0, 500) } } })); }
 
 async function reconcile(accountId) {
   const account = await requireAccount(accountId);
   if (!account.restrictedOuId) fail("请先完成 OU 自动初始化");
+  let checked = 0;
+  let moved = 0;
+  let skipped = 0;
+  const movedAccounts = [];
   try {
     const organization = await context(account);
     const members = (await organizationAccounts(organization.client)).filter((member) => member.Id && member.Id !== organization.managementAccountId && member.Status !== "SUSPENDED" && member.State !== "SUSPENDED");
-    let moved = 0;
-    let skipped = 0;
+    const movementContext = { ...organization, account, temporaryOuId: account.temporaryOuId, restrictedOuId: account.restrictedOuId, ous: await rootOus(organization.client, organization.rootId) };
+    checked = members.length;
     for (const member of members) {
       const parentId = (await organization.client.send(new ListParentsCommand({ ChildId: member.Id }))).Parents?.[0]?.Id;
       if (!parentId) fail(`无法读取成员账号 ${member.Id} 的父级`);
       if (parentId === account.restrictedOuId) { skipped += 1; continue; }
       await organization.client.send(new MoveAccountCommand({ AccountId: member.Id, SourceParentId: parentId, DestinationParentId: account.restrictedOuId }));
+      movedAccounts.push({ accountId: member.Id, name: member.Name || member.Id, email: member.Email || "", sourceParentName: parentName(movementContext, parentId), destinationParentName: restrictedName });
       moved += 1;
     }
     const message = `检查 ${members.length} 个成员账号，移动 ${moved} 个，跳过 ${skipped} 个`;
     await recordRun(accountId, "success", message);
+    await recordOperation({ account, mode: "automatic", status: "success", checked, moved, skipped, message, movedAccounts });
     return { accountId, checked: members.length, moved, skipped, message };
-  } catch (error) { await recordRun(accountId, "failed", error.message || "归位失败"); throw error; }
+  } catch (error) {
+    const message = error.message || "归位失败";
+    await recordRun(accountId, "failed", message);
+    await recordOperation({ account, mode: "automatic", status: "failed", checked, moved, skipped, message, movedAccounts });
+    throw error;
+  }
 }
 
 export async function runScheduledOuAutomation() {
   const accounts = await listAccounts();
   const results = [];
   for (const account of accounts) {
-    try { if (!account.configured) await initialize(account.accountId); results.push(await reconcile(account.accountId)); } catch (error) { results.push({ accountId: account.accountId, error: error.message || "Reconciliation failed" }); }
+    if (!account.configured) {
+      const message = "OU 尚未初始化";
+      await recordOperation({ account, mode: "automatic", status: "failed", checked: 0, moved: 0, skipped: 0, message });
+      results.push({ accountId: account.accountId, skipped: true, error: message });
+      continue;
+    }
+    try { results.push(await reconcile(account.accountId)); } catch (error) { results.push({ accountId: account.accountId, error: error.message || "Reconciliation failed" }); }
   }
   return { accounts: results.length, results };
 }
@@ -288,6 +360,7 @@ export async function handleOuAutomationRequest({ method, body, identity }) {
   if (body.action === "initialize") return initialize(String(body.accountId || ""), { confirmed: body.confirmed === true, useCompatible: body.useCompatible !== false });
   if (body.action === "configure") return { configuration: await configure(body) };
   if (body.action === "move-member") return { result: await moveMember(body) };
+  if (body.action === "history") return { history: await movementHistory(String(body.accountId || "")) };
   if (body.action === "run") return { result: await reconcile(String(body.accountId || "")) };
   if (body.action === "run-all") return runScheduledOuAutomation();
   fail("Invalid OU automation action");

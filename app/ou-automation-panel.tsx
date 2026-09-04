@@ -9,6 +9,8 @@ type AutomationAccount = { accountId: string; remark: string; groupName: string;
 type Discovery = { account: AutomationAccount; temporaryOu: OuOption | null; restrictedOu: OuOption | null; temporaryOuId: string; restrictedOuId: string; confirmations?: ConfirmationItem[] };
 type MemberAccount = { accountId: string; name: string; email: string; parentId: string; parentName: string; placement: 'ungrouped' | 'restricted' | 'temporary' | 'other' };
 type MoveDestination = 'restricted' | 'temporary';
+type MovedAccount = { accountId: string; name: string; email: string; sourceParentName: string; destinationParentName: string };
+type HistoryEntry = { payerAccountId: string; payerRemark: string; occurredAt: string; mode: 'automatic' | 'manual'; status: 'success' | 'failed'; checked: number; moved: number; skipped: number; message: string; movedAccounts: MovedAccount[] };
 
 export type OuAutomationHandle = { initializeAccount: (accountId: string) => Promise<void> };
 
@@ -24,14 +26,21 @@ export const OuAutomationPanel = forwardRef<OuAutomationHandle, { onNotice: (mes
   const [memberFilter, setMemberFilter] = useState<'all' | MemberAccount['placement']>('all');
   const [confirmations, setConfirmations] = useState<ConfirmationItem[]>([]);
   const [pendingMove, setPendingMove] = useState<{ member: MemberAccount; destination: MoveDestination } | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
   const [previewMode, setPreviewMode] = useState(false);
 
   useEffect(() => {
     if (!open) return;
-    const close = (event: KeyboardEvent) => event.key === 'Escape' && !confirmations.length && !pendingMove && setOpen(false);
+    const close = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      if (historyOpen) setHistoryOpen(false);
+      else if (!confirmations.length && !pendingMove) setOpen(false);
+    };
     window.addEventListener('keydown', close);
     return () => window.removeEventListener('keydown', close);
-  }, [open, confirmations.length, pendingMove]);
+  }, [open, confirmations.length, pendingMove, historyOpen]);
 
   async function request(body: Record<string, unknown>) {
     const response = await fetch('/api/ou-automation', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -141,11 +150,27 @@ export const OuAutomationPanel = forwardRef<OuAutomationHandle, { onNotice: (mes
     finally { setBusy(false); }
   }
 
+  async function openHistory() {
+    if (!selectedAccountId) return;
+    setHistoryOpen(true);
+    setHistoryLoading(true);
+    try {
+      const payload = await request({ action: 'history', accountId: selectedAccountId }) as { history?: HistoryEntry[] };
+      setHistoryEntries(payload.history ?? []);
+    } catch (error) { onNotice(error instanceof Error ? error.message : '操作记录读取失败'); }
+    finally { setHistoryLoading(false); }
+  }
+
   const accountNeedle = accountQuery.trim().toLocaleLowerCase('zh-CN');
   const visibleAccounts = accounts.filter((account) => !accountNeedle || [account.remark, account.accountId, account.groupName].some((value) => value.toLocaleLowerCase('zh-CN').includes(accountNeedle)));
   const memberNeedle = memberQuery.trim().toLocaleLowerCase('zh-CN');
   const visibleMembers = members.filter((member) => (memberFilter === 'all' || member.placement === memberFilter) && (!memberNeedle || [member.name, member.email, member.accountId].some((value) => value.toLocaleLowerCase('zh-CN').includes(memberNeedle))));
   const hasCompatible = confirmations.some((item) => item.action === 'reuse');
+  const historyGroups = historyEntries.reduce<Record<string, HistoryEntry[]>>((groups, entry) => {
+    const date = formatHistoryDate(entry.occurredAt);
+    groups[date] = [...(groups[date] ?? []), entry];
+    return groups;
+  }, {});
 
   return <>
     <button className={styles.trigger} onClick={() => void showPanel()}>自动化OU归位</button>
@@ -157,7 +182,7 @@ export const OuAutomationPanel = forwardRef<OuAutomationHandle, { onNotice: (mes
         <div className={styles.layout}>
           <aside className={styles.accounts}>{accounts.length === 0 ? <p>暂无代付账号</p> : visibleAccounts.length === 0 ? <p>没有匹配账号</p> : visibleAccounts.map((account) => <button key={account.accountId} className={selectedAccountId === account.accountId ? styles.active : ''} onClick={() => { setBusy(true); void inspect(account.accountId).catch((error) => onNotice(error.message)).finally(() => setBusy(false)); }}><span>{account.remark.slice(0, 1).toUpperCase()}</span><div><strong>{account.remark}</strong><small>{account.accountId} · {account.groupName}</small></div>{account.configured && <i className={styles.ready}>已就绪</i>}</button>)}</aside>
           <section className={styles.config}>{busy && !discovery ? <div className={styles.empty}>正在读取...</div> : !discovery ? <div className={styles.empty}>选择一个代付账号</div> : <>
-            <div className={styles.accountHead}><div><strong>{discovery.account.remark}</strong><small>{discovery.account.accountId}</small></div><button disabled={busy || previewMode || !discovery.restrictedOuId} onClick={() => void run(discovery.account.accountId)}>立即归位</button></div>
+            <div className={styles.accountHead}><div><strong>{discovery.account.remark}</strong><small>{discovery.account.accountId}</small></div><aside className={styles.accountActions}><button disabled={busy || previewMode} onClick={() => void openHistory()}>操作记录</button><button disabled={busy || previewMode || !discovery.restrictedOuId} onClick={() => void run(discovery.account.accountId)}>立即归位</button></aside></div>
             <div className={styles.ouSummary}><div><span>临时</span><strong>{discovery.temporaryOu?.name ?? '未配置'}</strong></div><div><span>禁止 SP/RI</span><strong>{discovery.restrictedOu?.name ?? '未配置'}</strong></div>{(!discovery.temporaryOuId || !discovery.restrictedOuId) && <button disabled={busy || previewMode} onClick={() => void beginInitialization(discovery.account.accountId)}>初始化</button>}</div>
             <div className={styles.memberHead}><div><h3>成员账号</h3><span>{members.length}</span></div><input value={memberQuery} onChange={(event) => setMemberQuery(event.target.value)} placeholder="搜索名称、邮箱或账号 ID" /></div>
             <div className={styles.tabs}>{(['all', 'restricted', 'temporary'] as const).map((value) => <button key={value} className={memberFilter === value ? styles.selectedTab : ''} onClick={() => setMemberFilter(value)}>{placementLabel(value)}</button>)}</div>
@@ -166,6 +191,7 @@ export const OuAutomationPanel = forwardRef<OuAutomationHandle, { onNotice: (mes
         </div>
         {confirmations.length > 0 && <div className={styles.confirmLayer}><div className={styles.confirmBox}><span>需要确认</span><h3>初始化 OU</h3>{confirmations.map((item) => <p key={item.kind}>{item.action === 'create' ? `未找到“${item.targetName}”，是否创建？` : `发现相似 OU“${item.candidate?.name}”，是否作为“${item.targetName}”？`}</p>)}<div><button onClick={() => setConfirmations([])}>取消</button>{hasCompatible && <button onClick={() => void confirmInitialization(false)}>不使用相似项</button>}<button className={styles.primary} onClick={() => void confirmInitialization(true)}>{hasCompatible ? '确认使用' : '确认创建'}</button></div></div></div>}
         {pendingMove && <div className={styles.confirmLayer}><div className={styles.confirmBox}><span>调整 OU</span><h3>{pendingMove.member.name}</h3><p>移动到“{placementLabel(pendingMove.destination)}”？移到临时后，次日 02:00 会自动归位。</p><div><button onClick={() => setPendingMove(null)}>取消</button><button className={styles.primary} disabled={busy} onClick={() => void confirmMove()}>确认移动</button></div></div></div>}
+        {historyOpen && <div className={styles.confirmLayer}><section className={styles.historyBox}><header><div><span>OPERATION LOG</span><h3>{discovery?.account.remark} · 操作记录</h3></div><button onClick={() => setHistoryOpen(false)}>×</button></header><div className={styles.historyBody}>{historyLoading ? <p>正在读取...</p> : historyEntries.length === 0 ? <p>暂无操作记录</p> : Object.entries(historyGroups).map(([date, entries]) => <section key={date}><h4>{date}</h4>{entries.map((entry) => <article key={`${entry.occurredAt}-${entry.mode}`}><div className={styles.historySummary}><time>{formatHistoryTime(entry.occurredAt)}</time><i data-mode={entry.mode}>{entry.mode === 'automatic' ? '自动任务' : '手动操作'}</i><b data-status={entry.status}>{entry.status === 'success' ? '成功' : '失败'}</b><p>检查 {entry.checked} · 移动 {entry.moved} · 跳过 {entry.skipped}</p></div>{entry.status === 'failed' && <em>{entry.message}</em>}{entry.movedAccounts.length > 0 && <div className={styles.movedAccounts}>{entry.movedAccounts.map((member) => <div key={`${entry.occurredAt}-${member.accountId}`}><span><strong>{member.name}</strong><small>{member.accountId}</small></span><p>{member.sourceParentName}<b>→</b>{member.destinationParentName}</p></div>)}</div>}</article>)}</section>)}</div></section></div>}
       </section>
     </div>}
   </>;
@@ -177,4 +203,14 @@ function placementLabel(value: 'all' | MemberAccount['placement']) {
   if (value === 'restricted') return '禁止 SP/RI';
   if (value === 'temporary') return '临时';
   return '其他 OU';
+}
+
+function formatHistoryDate(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '未知日期' : date.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+}
+
+function formatHistoryTime(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '--:--' : date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
 }
