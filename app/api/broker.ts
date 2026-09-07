@@ -31,3 +31,25 @@ export async function proxyBroker(path: string, init: RequestInit, user: ChatGPT
     return NextResponse.json({ error: 'AWS 服务暂时不可用' }, { status: 502 });
   }
 }
+
+export async function proxyLocalBroker(path: string, init: RequestInit, user: ChatGPTUser) {
+  const port = process.env.NEXUS_LOCAL_BROKER_PORT || '8787';
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+      ...init,
+      headers: {
+        ...init.headers,
+        'x-internal-key': 'nexus-local-dev',
+        'x-auth-user': encodeURIComponent(user.displayName),
+        'x-auth-user-id': user.userId,
+        'x-auth-role': user.role,
+        'x-auth-permission': user.permissionId,
+      },
+      cache: 'no-store',
+    });
+    const payload = await response.json();
+    return NextResponse.json(payload, { status: response.status, headers: { 'Cache-Control': 'no-store' } });
+  } catch {
+    return NextResponse.json({ error: '本地 AWS Broker 尚未启动' }, { status: 502 });
+  }
+}

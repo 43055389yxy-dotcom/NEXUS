@@ -3,6 +3,7 @@ import { DeleteItemCommand, DynamoDBClient, GetItemCommand, PutItemCommand, Scan
 import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
 import { handleOuAutomationRequest, isOuAutomationScheduledEvent, runScheduledOuAutomation } from "./ou-automation.mjs";
 import { handleMfaRecoveryRequest } from "./mfa-recovery.mjs";
+import { handleSupportBillingRequest, isSupportBillingScheduledEvent, runScheduledSupportBilling } from "./support-billing.mjs";
 
 const dynamodb = new DynamoDBClient({});
 const sts = new STSClient({});
@@ -69,11 +70,12 @@ function normalizeAccount(body) {
   const remark = String(body.remark || body.name || "").trim();
   const region = String(body.region || "us-east-1").trim();
   const groupId = String(body.groupId || "").trim();
+  const accountType = ["pma", "cma"].includes(String(body.accountType || "").trim()) ? String(body.accountType).trim() : "";
   if (!/^\d{12}$/.test(accountId)) throw new Error("AWS account ID must be 12 digits");
   if (!remark || remark.length > 100) throw new Error("Account remark is required");
   if (!/^[a-z]{2}(?:-gov)?-[a-z]+-\d$/.test(region)) throw new Error("Invalid AWS region");
   if (operationsAccountId === accountId) throw new Error("Operations account cannot be added");
-  return { accountId, remark, region, groupId };
+  return { accountId, remark, region, groupId, accountType };
 }
 
 async function ensureGroup(groupId) {
@@ -85,7 +87,7 @@ async function ensureGroup(groupId) {
 async function listAccounts(identity) {
   const result = await dynamodb.send(new ScanCommand({
     TableName: accountsTable,
-    ProjectionExpression: "accountId, #name, remark, #region, groupId, createdAt, updatedAt",
+    ProjectionExpression: "accountId, #name, remark, #region, groupId, accountType, createdAt, updatedAt",
     ExpressionAttributeNames: { "#name": "name", "#region": "region" },
   }));
   const access = await allowedGroupIds(identity);
@@ -94,6 +96,7 @@ async function listAccounts(identity) {
     remark: item.remark?.S || item.name?.S || item.accountId.S,
     region: item.region.S,
     groupId: item.groupId?.S || "",
+    accountType: item.accountType?.S || "",
     createdAt: item.createdAt?.S,
     updatedAt: item.updatedAt?.S,
   })).filter((account) => !access || access.has(account.groupId || UNGROUPED))
@@ -108,7 +111,7 @@ async function saveAccount(body) {
     TableName: accountsTable,
     Item: {
       accountId: { S: account.accountId }, name: { S: account.remark }, remark: { S: account.remark }, region: { S: account.region },
-      groupId: { S: account.groupId }, createdAt: { S: now }, updatedAt: { S: now },
+      groupId: { S: account.groupId }, ...(account.accountType ? { accountType: { S: account.accountType } } : {}), createdAt: { S: now }, updatedAt: { S: now },
     },
     ConditionExpression: "attribute_not_exists(accountId)",
   }));
@@ -123,21 +126,22 @@ async function updateAccount(body) {
   const remark = String(body.remark ?? current.Item.remark?.S ?? current.Item.name?.S ?? "").trim();
   const region = String(body.region ?? current.Item.region?.S ?? "us-east-1").trim();
   const groupId = String(body.groupId ?? current.Item.groupId?.S ?? "").trim();
+  const accountType = ["pma", "cma"].includes(String(body.accountType ?? current.Item.accountType?.S ?? "").trim()) ? String(body.accountType ?? current.Item.accountType?.S).trim() : "";
   if (!remark || remark.length > 100) throw new Error("Account remark is required");
   if (!/^[a-z]{2}(?:-gov)?-[a-z]+-\d$/.test(region)) throw new Error("Invalid AWS region");
   await ensureGroup(groupId);
   const result = await dynamodb.send(new UpdateItemCommand({
     TableName: accountsTable,
     Key: { accountId: { S: accountId } },
-    UpdateExpression: "SET remark = :remark, #name = :remark, #region = :region, groupId = :groupId, updatedAt = :updatedAt",
+    UpdateExpression: "SET remark = :remark, #name = :remark, #region = :region, groupId = :groupId, accountType = :accountType, updatedAt = :updatedAt",
     ConditionExpression: "attribute_exists(accountId)",
     ExpressionAttributeNames: { "#name": "name", "#region": "region" },
-    ExpressionAttributeValues: { ":remark": { S: remark }, ":region": { S: region }, ":groupId": { S: groupId }, ":updatedAt": { S: new Date().toISOString() } },
+    ExpressionAttributeValues: { ":remark": { S: remark }, ":region": { S: region }, ":groupId": { S: groupId }, ":accountType": { S: accountType }, ":updatedAt": { S: new Date().toISOString() } },
     ReturnValues: "ALL_NEW",
   }));
   return {
     accountId: result.Attributes.accountId.S, remark: result.Attributes.remark.S,
-    region: result.Attributes.region.S, groupId: result.Attributes.groupId?.S || "",
+    region: result.Attributes.region.S, groupId: result.Attributes.groupId?.S || "", accountType: result.Attributes.accountType?.S || "",
   };
 }
 
@@ -155,8 +159,8 @@ async function deleteAccount(body) {
 async function listGroups(identity) {
   const result = await dynamodb.send(new ScanCommand({ TableName: groupsTable }));
   const access = await allowedGroupIds(identity);
-  return (result.Items || []).filter((item) => item.name?.S && !item.itemType?.S).map((item) => ({
-    groupId: item.groupId.S, name: item.name.S, createdAt: item.createdAt?.S,
+  return (result.Items || []).filter((item) => item.name?.S && !item.itemType?.S && item.groupId?.S !== "builtin-pma").map((item) => ({
+    groupId: item.groupId.S, name: item.name.S === "CMA组" ? "PMA" : item.name.S, createdAt: item.createdAt?.S,
   })).filter((group) => !access || access.has(group.groupId))
     .sort((a, b) => String(a.name || a.groupId || "").localeCompare(String(b.name || b.groupId || ""), "zh-CN"));
 }
@@ -261,7 +265,8 @@ async function savePermissions(identity, body) {
 
 export const handler = async (event) => {
   try {
-    if (isOuAutomationScheduledEvent(event)) return runScheduledOuAutomation();
+    if (isSupportBillingScheduledEvent(event)) return { supportBilling: await runScheduledSupportBilling().catch((error) => ({ error: error?.message || "Support billing automation failed" })) };
+    if (isOuAutomationScheduledEvent(event)) return { ou: await runScheduledOuAutomation().catch((error) => ({ error: error?.message || "OU automation failed" })) };
     if (!authorized(event)) return response(401, { error: "Unauthorized" });
     const method = event.requestContext?.http?.method || event.httpMethod;
     const path = event.rawPath || event.path || "/";
@@ -278,6 +283,7 @@ export const handler = async (event) => {
     if (method === "POST" && path === "/permissions") return response(200, { user: await savePermissions(identity, parseBody(event)) });
     if ((method === "GET" || method === "POST") && path === "/ou-automation") return response(200, await handleOuAutomationRequest({ method, body: method === "POST" ? parseBody(event) : {}, identity }));
     if (method === "POST" && path === "/mfa-recovery") return response(200, await handleMfaRecoveryRequest({ method, body: parseBody(event), identity }));
+    if ((method === "GET" || method === "POST") && path === "/support-billing") return response(200, await handleSupportBillingRequest({ method, body: method === "POST" ? parseBody(event) : {}, identity }));
     if (method === "POST" && path === "/console-login") return response(200, await createConsoleLogin(identity, parseBody(event)));
     return response(404, { error: "Not found" });
   } catch (error) {

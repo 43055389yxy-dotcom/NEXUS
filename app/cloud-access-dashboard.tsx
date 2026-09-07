@@ -6,15 +6,19 @@ import { OuAutomationPanel, type OuAutomationHandle } from './ou-automation-pane
 import { OU_AUTOMATION_PROVISION_FRAGMENT } from './ou-automation-provision';
 import { MFA_RECOVERY_PROVISION_FRAGMENT } from './mfa-recovery-provision';
 import { ADMIN_ROLE_TRUST_FRAGMENT } from './admin-role-provision';
+import { SupportBillingPanel } from './support-billing-panel';
+import { SUPPORT_BILLING_PROVISION_FRAGMENT } from './support-billing-provision';
+import { BillingAccessGuide } from './billing-access-guide';
 
-type AccountRecord = { accountId: string; remark?: string; name?: string; region: string; groupId?: string };
+type AccountType = 'pma' | 'cma' | '';
+type AccountRecord = { accountId: string; remark?: string; name?: string; region: string; groupId?: string; accountType?: AccountType };
 type GroupRecord = { groupId: string; name: string };
-type ManagedAccount = CloudAccount & { groupId: string };
-type NewAccount = { remark: string; accountId: string; region: string; groupId: string };
+type ManagedAccount = CloudAccount & { groupId: string; accountType: AccountType };
+type NewAccount = { remark: string; accountId: string; region: string; groupId: string; accountType: AccountType };
 type PermissionUser = { userId: string; userName: string; role: string; groupIds: string[]; configured?: boolean };
 const OPS_ACCOUNT_ID = '590184009438';
 const regions = ['us-east-1', 'us-west-2', 'ap-southeast-1', 'ap-northeast-1', 'eu-west-1'];
-const GROUP_DISPLAY_ORDER = ['老代付组', 'CMA组', '技术账号', 'VPN'];
+const GROUP_DISPLAY_ORDER = ['老代付组', 'PMA', '技术账号', 'VPN'];
 
 export function CloudAccessDashboard({ userName, userRole }: { userName: string; userRole: 'super_admin' | 'admin' | 'user' }) {
   const isAdmin = userRole === 'super_admin' || userRole === 'admin';
@@ -25,11 +29,12 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
   const [query, setQuery] = useState('');
   const [selectedGroup, setSelectedGroup] = useState('');
   const [showAdd, setShowAdd] = useState(false);
+  const [billingGuideAccount, setBillingGuideAccount] = useState<{ id: string; name: string } | null>(null);
   const [showAddGroup, setShowAddGroup] = useState(false);
   const [activeMenu, setActiveMenu] = useState('');
   const [editing, setEditing] = useState<ManagedAccount | null>(null);
   const [deleting, setDeleting] = useState<ManagedAccount | null>(null);
-  const [editForm, setEditForm] = useState({ remark: '', region: 'us-east-1', groupId: '' });
+  const [editForm, setEditForm] = useState<{ remark: string; region: string; groupId: string; accountType: AccountType }>({ remark: '', region: 'us-east-1', groupId: '', accountType: '' });
   const [groupName, setGroupName] = useState('');
   const [connecting, setConnecting] = useState<ManagedAccount | null>(null);
   const [launching, setLaunching] = useState(false);
@@ -48,7 +53,8 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
     return () => window.removeEventListener('mousedown', closeMenu);
   }, [activeMenu]);
   const [notice, setNotice] = useState('');
-  const [newAccount, setNewAccount] = useState<NewAccount>({ remark: '', accountId: '', region: 'us-east-1', groupId: '' });
+  const [newAccount, setNewAccount] = useState<NewAccount>({ remark: '', accountId: '', region: 'us-east-1', groupId: '', accountType: '' });
+  const [pmaAccountType, setPmaAccountType] = useState<'pma' | 'cma'>('cma');
   const searchRef = useRef<HTMLInputElement>(null);
   const ouAutomationRef = useRef<OuAutomationHandle>(null);
 
@@ -65,7 +71,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
       if (!accountsResponse.ok) throw new Error(accountsPayload.error ?? '账号读取失败');
       if (!groupsResponse.ok) throw new Error(groupsPayload.error ?? '分组读取失败');
       setAccounts((accountsPayload.accounts ?? []).map(toManagedAccount));
-      setGroups(groupsPayload.groups ?? []);
+      setGroups((groupsPayload.groups ?? []).map((group) => ({ ...group, name: group.name === 'CMA组' ? 'PMA' : group.name })));
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : '数据读取失败');
     } finally {
@@ -136,6 +142,10 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
       .sort((a, b) => String(a.name ?? a.id ?? '').localeCompare(String(b.name ?? b.id ?? ''), 'zh-CN'));
   }, [accounts, query, selectedGroup]);
 
+  const displayedAccounts = useMemo(() => groupNameFor(selectedGroup) === 'PMA'
+    ? visibleAccounts.filter((account) => (account.accountType || 'cma') === pmaAccountType)
+    : visibleAccounts, [visibleAccounts, selectedGroup, pmaAccountType, groups]);
+
   const orderedGroups = useMemo(() => [...groups].sort((left, right) => {
     const leftIndex = GROUP_DISPLAY_ORDER.indexOf(left.name);
     const rightIndex = GROUP_DISPLAY_ORDER.indexOf(right.name);
@@ -149,7 +159,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
     return () => window.clearTimeout(timer);
   }, [groups, loading, orderedGroups]);
 
-  const provisionCommand = useMemo(() => buildProvisionCommand(), []);
+  const provisionCommand = useMemo(() => buildProvisionCommand(newAccount.accountType), [newAccount.accountType]);
 
   async function copyText(value: string, key: string) {
     await navigator.clipboard.writeText(value);
@@ -181,7 +191,9 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
     event.preventDefault();
     const remark = newAccount.remark.trim();
     const accountId = newAccount.accountId.trim();
+    const selectedGroupName = groups.find((group) => group.groupId === newAccount.groupId)?.name;
     if (!remark || !/^\d{12}$/.test(accountId)) { setNotice('请检查备注和代付账号 ID'); return; }
+    if (selectedGroupName === 'PMA' && !newAccount.accountType) { setNotice('请选择 PMA 或 CMA 账号类型'); return; }
     if (accounts.some((account) => account.id === accountId)) { setNotice('该账号已经存在'); return; }
     setSaving(true);
     try {
@@ -189,10 +201,10 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
       const payload = await response.json() as { account?: AccountRecord; error?: string };
       if (!response.ok || !payload.account) throw new Error(payload.error ?? '保存失败');
       setAccounts((current) => [...current, toManagedAccount(payload.account as AccountRecord)]);
-      const selectedGroupName = groups.find((group) => group.groupId === newAccount.groupId)?.name;
       setShowAdd(false);
-      setNewAccount({ remark: '', accountId: '', region: 'us-east-1', groupId: selectedGroup !== 'ungrouped' ? selectedGroup : '' });
-      if (selectedGroupName === 'CMA组' || selectedGroupName === '老代付组') await ouAutomationRef.current?.initializeAccount(accountId);
+      setBillingGuideAccount({ id: accountId, name: remark });
+      setNewAccount({ remark: '', accountId: '', region: 'us-east-1', groupId: selectedGroup !== 'ungrouped' ? selectedGroup : '', accountType: '' });
+      if (selectedGroupName === '老代付组' || (selectedGroupName === 'PMA' && newAccount.accountType === 'cma')) await ouAutomationRef.current?.initializeAccount(accountId);
       else setNotice(`${remark} 已添加`);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '保存失败');
@@ -216,7 +228,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
   function openEdit(account: ManagedAccount) {
     setActiveMenu('');
     setEditing(account);
-    setEditForm({ remark: account.name, region: account.region, groupId: account.groupId });
+    setEditForm({ remark: account.name, region: account.region, groupId: account.groupId, accountType: account.accountType || (groupNameFor(account.groupId) === 'PMA' ? 'cma' : '') });
   }
 
   async function saveEdit(event: FormEvent) {
@@ -227,7 +239,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
       const response = await fetch('/api/accounts', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accountId: editing.id, remark: editForm.remark.trim(), region: editForm.region, groupId: editForm.groupId }),
+        body: JSON.stringify({ accountId: editing.id, remark: editForm.remark.trim(), region: editForm.region, groupId: editForm.groupId, accountType: editForm.accountType }),
       });
       const payload = await response.json() as { account?: AccountRecord; error?: string };
       if (!response.ok || !payload.account) throw new Error(payload.error ?? '保存失败');
@@ -281,7 +293,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
       <header className="console-header">
         <a className="console-brand" href="#top"><span>N</span><strong>NEXUS</strong><small>AWS 账号管理</small></a>
         <div className="header-search"><span>⌕</span><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、账号 ID、区域" /><kbd>/</kbd></div>
-        <div className="header-actions"><span className="current-user">{userName}</span><button className="icon-button" onClick={() => void loadData()} aria-label="刷新" title="刷新">↻</button>{isAdmin && <OuAutomationPanel ref={ouAutomationRef} onNotice={setNotice} />}{isAdmin && <button className="permission-button" onClick={() => void openPermissions()}>权限设置</button>}{isAdmin && <button className="add-button" onClick={() => setShowAdd(true)}><span>+</span> 添加账号</button>}</div>
+        <div className="header-actions"><span className="current-user">{userName}</span><button className="icon-button" onClick={() => void loadData()} aria-label="刷新" title="刷新">↻</button>{isAdmin && <SupportBillingPanel onNotice={setNotice} />}{isAdmin && <OuAutomationPanel ref={ouAutomationRef} onNotice={setNotice} />}{isAdmin && <button className="permission-button" onClick={() => void openPermissions()}>权限设置</button>}{isAdmin && <button className="add-button" onClick={() => setShowAdd(true)}><span>+</span> 添加账号</button>}</div>
       </header>
 
       <div className="platform-layout" id="top">
@@ -300,17 +312,18 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
 
           {loading && <div className="accounts-layout">{[0,1,2,3].map((item) => <div className="account-tile loading-tile" key={item} />)}</div>}
           {!loading && loadError && <div className="inline-state error"><span>!</span><strong>{loadError}</strong><button onClick={() => void loadData()}>重试</button></div>}
-          {!loading && !loadError && (
-            <div className="accounts-layout">
-              {visibleAccounts.map((account, index) => (
+          {!loading && !loadError && (<>
+          {groupNameFor(selectedGroup) === 'PMA' && <div className="pma-account-tabs" role="tablist" aria-label="PMA 架构账号类型"><button type="button" className={pmaAccountType === 'cma' ? 'active' : ''} onClick={() => setPmaAccountType('cma')}>CMA账号 <b>{visibleAccounts.filter((account) => (account.accountType || 'cma') === 'cma').length}</b></button><button type="button" className={pmaAccountType === 'pma' ? 'active' : ''} onClick={() => setPmaAccountType('pma')}>PMA账号 <b>{visibleAccounts.filter((account) => account.accountType === 'pma').length}</b></button></div>}
+          <div className="accounts-layout">
+              {displayedAccounts.map((account, index) => (
                 <article className="account-tile clickable note-only" key={account.id} style={{ animationDelay: `${index * 55}ms` }} onClick={() => launchConsole(account)} onKeyDown={(event) => { if (event.key === 'Enter') launchConsole(account); }} onDragStart={(event) => { if (!isAdmin) return; event.dataTransfer.setData('text/account-id', account.id); event.dataTransfer.effectAllowed = 'move'; }} draggable={isAdmin} role="button" tabIndex={0} aria-label={`进入 ${account.name} AWS 控制台`} title={isAdmin ? '点击进入 AWS，拖动可调整分组' : '点击进入 AWS'}>
                   <h2>{account.name}</h2>
                   {isAdmin && <button className="card-menu-button" onClick={(event) => { event.stopPropagation(); setActiveMenu((current) => current === account.id ? '' : account.id); }} onMouseDown={(event) => event.stopPropagation()} aria-label="账号操作">•••</button>}
-                  {isAdmin && activeMenu === account.id && <div className="card-menu" onClick={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()}><button onClick={() => openEdit(account)}>编辑备注</button><button className="danger" onClick={() => { setActiveMenu(''); setDeleting(account); }}>删除记录</button></div>}
+                  {isAdmin && activeMenu === account.id && <div className="card-menu" onClick={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}><button onClick={() => openEdit(account)}>编辑备注</button><button onClick={() => { setActiveMenu(''); setBillingGuideAccount({ id: account.id, name: account.name }); }}>账单访问教程</button><button className="danger" onClick={() => { setActiveMenu(''); setDeleting(account); }}>删除记录</button></div>}
                 </article>
               ))}
             </div>
-          )}
+          </>)}
           {!loading && !loadError && visibleAccounts.length === 0 && accounts.length > 0 && <div className="inline-state"><span>⌕</span><strong>没有匹配账号</strong><button onClick={() => setQuery('')}>清除搜索</button></div>}
         </section>
       </div>
@@ -327,9 +340,10 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
             <form onSubmit={(event) => void addAccount(event)}>
               <div className="dialog-grid">
                 <div className="account-form">
-                  <label><span>备注</span><input autoFocus value={newAccount.remark} onChange={(event) => setNewAccount((current) => ({ ...current, remark: event.target.value }))} placeholder="例如：上海 CMA 主账号" maxLength={100} /></label>
+                  <label><span>备注</span><input autoFocus value={newAccount.remark} onChange={(event) => setNewAccount((current) => ({ ...current, remark: event.target.value }))} placeholder="例如：上海 PMA 主账号" maxLength={100} /></label>
                   <label><span>代付账号 ID</span><input value={newAccount.accountId} onChange={(event) => setNewAccount((current) => ({ ...current, accountId: event.target.value.replace(/\D/g, '').slice(0, 12) }))} placeholder="12 位账号 ID" inputMode="numeric" /></label>
-                  <label><span>分组</span><select value={newAccount.groupId} onChange={(event) => setNewAccount((current) => ({ ...current, groupId: event.target.value }))}><option value="">未分组</option>{groups.map((group) => <option key={group.groupId} value={group.groupId}>{group.name}</option>)}</select></label>
+                  <label><span>分组</span><select value={newAccount.groupId} onChange={(event) => { const groupId = event.target.value; const isPmaGroup = groups.find((group) => group.groupId === groupId)?.name === 'PMA'; setNewAccount((current) => ({ ...current, groupId, accountType: isPmaGroup ? current.accountType || 'pma' : '' })); }}><option value="">未分组</option>{groups.map((group) => <option key={group.groupId} value={group.groupId}>{group.name}</option>)}</select></label>
+                  {groups.find((group) => group.groupId === newAccount.groupId)?.name === 'PMA' && <label><span>账号类型</span><select value={newAccount.accountType} onChange={(event) => setNewAccount((current) => ({ ...current, accountType: event.target.value as AccountType }))}><option value="pma">PMA账号</option><option value="cma">CMA账号</option></select></label>}
                   <label><span>默认区域</span><select value={newAccount.region} onChange={(event) => setNewAccount((current) => ({ ...current, region: event.target.value }))}>{regions.map((item) => <option key={item}>{item}</option>)}</select></label>
                 </div>
                 <div className="command-panel ready">
@@ -359,7 +373,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
             <p className="readonly-id">{formatAccountId(editing.id)}</p>
             <form onSubmit={(event) => void saveEdit(event)}>
               <label><span>备注</span><input autoFocus value={editForm.remark} onChange={(event) => setEditForm((current) => ({ ...current, remark: event.target.value }))} maxLength={100} /></label>
-              <div className="edit-grid"><label><span>分组</span><select value={editForm.groupId} onChange={(event) => setEditForm((current) => ({ ...current, groupId: event.target.value }))}><option value="">未分组</option>{groups.map((group) => <option key={group.groupId} value={group.groupId}>{group.name}</option>)}</select></label><label><span>默认区域</span><select value={editForm.region} onChange={(event) => setEditForm((current) => ({ ...current, region: event.target.value }))}>{regions.map((item) => <option key={item}>{item}</option>)}</select></label></div>
+              <div className="edit-grid"><label><span>分组</span><select value={editForm.groupId} onChange={(event) => { const groupId = event.target.value; const isPmaGroup = groups.find((group) => group.groupId === groupId)?.name === 'PMA'; setEditForm((current) => ({ ...current, groupId, accountType: isPmaGroup ? current.accountType || 'pma' : '' })); }}><option value="">未分组</option>{groups.map((group) => <option key={group.groupId} value={group.groupId}>{group.name}</option>)}</select></label>{groups.find((group) => group.groupId === editForm.groupId)?.name === 'PMA' && <label><span>账号类型</span><select value={editForm.accountType} onChange={(event) => setEditForm((current) => ({ ...current, accountType: event.target.value as AccountType }))}><option value="pma">PMA账号</option><option value="cma">CMA账号</option></select></label>}<label><span>默认区域</span><select value={editForm.region} onChange={(event) => setEditForm((current) => ({ ...current, region: event.target.value }))}>{regions.map((item) => <option key={item}>{item}</option>)}</select></label></div>
               <div className="dialog-actions"><button type="button" className="cancel" onClick={() => setEditing(null)}>取消</button><button className="save" disabled={saving || !editForm.remark.trim()}>{saving ? '保存中...' : '保存'}</button></div>
             </form>
           </section>
@@ -375,16 +389,27 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
         </div>
       )}
 
+      {isAdmin && billingGuideAccount && <BillingAccessGuide key={billingGuideAccount.id} account={billingGuideAccount} onClose={() => setBillingGuideAccount(null)} />}
       {connecting && <div className="connection-layer" role="status"><section className="connection-box"><div className="aws-spinner"><span>aws</span><i /><i /></div><h2>正在打开</h2><p>{connecting.name}</p><div className="progress-line"><i /></div></section></div>}
       {notice && <div className="notice"><span>✓</span>{notice}</div>}
     </main>
   );
 }
 
-function toManagedAccount(account: AccountRecord): ManagedAccount { const remark = account.remark ?? account.name ?? account.accountId; return { id:account.accountId,name:remark,organization:remark,region:account.region,groupId:account.groupId ?? '',roleName:'TontianOperationsRole',access:'admin',environment:'production',favorite:false,lastUsed:'' }; }
+function toManagedAccount(account: AccountRecord): ManagedAccount { const remark = account.remark ?? account.name ?? account.accountId; const accountType: AccountType = account.accountType === 'pma' ? 'pma' : account.accountType === 'cma' ? 'cma' : ''; return { id:account.accountId,name:remark,organization:remark,region:account.region,groupId:account.groupId ?? '',accountType,roleName:'TontianOperationsRole',access:'admin',environment:'production',favorite:false,lastUsed:'' }; }
 function formatAccountId(accountId:string){return accountId.replace(/(\d{4})(?=\d)/g,'$1 ')}
 function isTypingTarget(target:EventTarget|null){return target instanceof HTMLInputElement||target instanceof HTMLTextAreaElement||target instanceof HTMLSelectElement}
-function buildProvisionCommand(){return `set -e
+function buildProvisionCommand(accountType: AccountType){const organizationGuard=accountType==='pma'?'':`
+MANAGEMENT_ACCOUNT_ID=$(aws organizations describe-organization --query 'Organization.MasterAccountId' --output text 2>/dev/null) || {
+  echo "错误：当前账号未加入 AWS Organizations，无法作为代付管理账号接入"
+  exit 1
+}
+
+if [ -z "$MANAGEMENT_ACCOUNT_ID" ] || [ "$MANAGEMENT_ACCOUNT_ID" = "None" ] || [ "$CURRENT_ACCOUNT_ID" != "$MANAGEMENT_ACCOUNT_ID" ]; then
+  echo "错误：当前账号不是 AWS Organization 管理账号，禁止接入"
+  exit 1
+fi
+`;const organizationFeatures=accountType==='pma'?'':`${OU_AUTOMATION_PROVISION_FRAGMENT}\n${MFA_RECOVERY_PROVISION_FRAGMENT}`;const script=`set -e
 
 export AWS_PAGER=""
 export AWS_CLI_AUTO_PROMPT=off
@@ -393,6 +418,7 @@ OPS_ACCOUNT_ID="${OPS_ACCOUNT_ID}"
 CURRENT_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
 if [ "$CURRENT_ACCOUNT_ID" = "$OPS_ACCOUNT_ID" ]; then echo "错误：不能在运维账号执行"; exit 1; fi
+${organizationGuard}
 
 cat >/tmp/tontian-operations-trust.json <<EOF_POLICY
 {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::\${OPS_ACCOUNT_ID}:role/TontianConsoleBrokerRole"},"Action":"sts:AssumeRole"}]}
@@ -420,6 +446,6 @@ cat >/tmp/tontian-organization-operations.json <<'EOF_ORG'
 EOF_ORG
 aws iam put-role-policy --role-name TontianOperationsRole --policy-name TontianOrganizationOperations --policy-document file:///tmp/tontian-organization-operations.json
 aws iam attach-role-policy --role-name TontianAdminRole --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
-${OU_AUTOMATION_PROVISION_FRAGMENT}
-${MFA_RECOVERY_PROVISION_FRAGMENT}
-echo "账号接入完成：$CURRENT_ACCOUNT_ID"`;}
+	${organizationFeatures}
+	${SUPPORT_BILLING_PROVISION_FRAGMENT}
+	echo "账号接入完成：$CURRENT_ACCOUNT_ID"`;const bytes=new TextEncoder().encode(script);let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);const encoded=btoa(binary);return `printf '%s' '${encoded}' | base64 -d > /tmp/tontian-account-setup.sh && bash /tmp/tontian-account-setup.sh`;}

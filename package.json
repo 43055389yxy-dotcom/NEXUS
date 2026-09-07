@@ -6,12 +6,20 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "dev": "vinext dev",
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "vinext dev",
     "build": "vinext build",
     "start": "vinext start",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
   },
   "dependencies": {
+    "@aws-sdk/client-billing": "^3.1127.0",
+    "@aws-sdk/client-billingconductor": "^3.1127.0",
+    "@aws-sdk/client-cost-explorer": "^3.1127.0",
+    "@aws-sdk/client-dynamodb": "^3.1127.0",
+    "@aws-sdk/client-iam": "^3.1127.0",
+    "@aws-sdk/client-organizations": "^3.1127.0",
+    "@aws-sdk/client-sts": "^3.1127.0",
     "next": "16.2.6",
     "react": "19.2.6",
     "react-dom": "19.2.6"

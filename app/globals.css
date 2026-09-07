@@ -175,6 +175,14 @@ button { color: inherit; }
 .account-form label > span, .edit-dialog label > span, .group-dialog label > span { display: block; margin: 0 0 6px 2px; color: #8594aa; font-size: 9px; font-weight: 850; }
 .account-form input, .account-form select, .edit-dialog input, .edit-dialog select, .group-dialog input { width: 100%; height: 43px; padding: 0 11px; border: 1px solid var(--line); border-radius: 9px; outline: 0; color: #dce6f4; background: rgba(255,255,255,.025); font-size: 10px; transition: .2s; }
 .account-form select, .edit-dialog select { color-scheme: dark; }
+.account-form select option, .edit-dialog select option { color: #17243a; background: #e8edf4; }
+.account-form select option:checked, .edit-dialog select option:checked { color: #10213c; background: #8dbcf3; }
+
+.pma-account-tabs { display:flex; align-items:center; gap:8px; padding:0 50px 22px; }
+.pma-account-tabs button { display:inline-flex; align-items:center; gap:9px; height:38px; padding:0 16px; border:1px solid var(--line); border-radius:10px; color:#8291a8; background:rgba(10,19,32,.68); font-size:11px; font-weight:850; cursor:pointer; transition:.2s; }
+.pma-account-tabs button:hover { color:#dfe9f8; border-color:rgba(76,143,255,.35); }
+.pma-account-tabs button.active { color:#eef5ff; border-color:rgba(76,143,255,.55); background:linear-gradient(135deg,rgba(43,105,216,.32),rgba(30,82,157,.18)); box-shadow:0 8px 24px rgba(15,70,160,.12); }
+.pma-account-tabs b { min-width:20px; height:20px; padding:0 6px; display:inline-grid; place-items:center; border-radius:999px; color:#8dbcf3; background:rgba(74,139,238,.15); font-size:9px; }
 .account-form input::placeholder { color: #536176; }
 .account-form input:focus, .account-form select:focus, .edit-dialog input:focus, .edit-dialog select:focus, .group-dialog input:focus { border-color: rgba(75,141,255,.5); background: rgba(36,56,88,.22); box-shadow: 0 0 0 4px rgba(75,141,255,.07), 0 10px 24px rgba(0,0,0,.08); }
 .command-panel { min-height: 330px; display: grid; place-items: center; overflow: hidden; border: 1px dashed var(--line); border-radius: 12px; color: #6d7c91; background: rgba(5,10,18,.45); }
