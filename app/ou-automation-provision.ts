@@ -10,7 +10,7 @@ else
 fi
 
 cat >/tmp/tontian-ou-automation-policy.json <<'EOF_AUTOMATION_POLICY'
-{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["organizations:DescribeOrganization","organizations:ListRoots","organizations:ListOrganizationalUnitsForParent","organizations:CreateOrganizationalUnit","organizations:EnablePolicyType","organizations:ListPolicies","organizations:DescribePolicy","organizations:CreatePolicy","organizations:UpdatePolicy","organizations:ListPoliciesForTarget","organizations:AttachPolicy","organizations:ListAccounts","organizations:ListParents","organizations:MoveAccount"],"Resource":"*"}]}
+{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["organizations:DescribeOrganization","organizations:ListRoots","organizations:ListOrganizationalUnitsForParent","organizations:CreateOrganizationalUnit","organizations:UpdateOrganizationalUnit","organizations:EnablePolicyType","organizations:ListPolicies","organizations:DescribePolicy","organizations:CreatePolicy","organizations:UpdatePolicy","organizations:ListPoliciesForTarget","organizations:AttachPolicy","organizations:DetachPolicy","organizations:ListAccounts","organizations:ListParents","organizations:MoveAccount"],"Resource":"*"}]}
 EOF_AUTOMATION_POLICY
 aws iam put-role-policy --role-name TontianOrganizationAutomationRole --policy-name TontianOrganizationAutomationPolicy --policy-document file:///tmp/tontian-ou-automation-policy.json
 `;

@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { DeleteItemCommand, DynamoDBClient, GetItemCommand, PutItemCommand, ScanCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
 import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
 import { handleOuAutomationRequest, isOuAutomationScheduledEvent, runScheduledOuAutomation } from "./ou-automation.mjs";
+import { handleMfaRecoveryRequest } from "./mfa-recovery.mjs";
 
 const dynamodb = new DynamoDBClient({});
 const sts = new STSClient({});
@@ -276,6 +277,7 @@ export const handler = async (event) => {
     if (method === "GET" && path === "/permissions") return response(200, { users: await listPermissions(identity) });
     if (method === "POST" && path === "/permissions") return response(200, { user: await savePermissions(identity, parseBody(event)) });
     if ((method === "GET" || method === "POST") && path === "/ou-automation") return response(200, await handleOuAutomationRequest({ method, body: method === "POST" ? parseBody(event) : {}, identity }));
+    if (method === "POST" && path === "/mfa-recovery") return response(200, await handleMfaRecoveryRequest({ method, body: parseBody(event), identity }));
     if (method === "POST" && path === "/console-login") return response(200, await createConsoleLogin(identity, parseBody(event)));
     return response(404, { error: "Not found" });
   } catch (error) {

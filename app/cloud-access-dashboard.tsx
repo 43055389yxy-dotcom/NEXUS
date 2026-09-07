@@ -4,6 +4,8 @@ import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { type CloudAccount } from './accounts';
 import { OuAutomationPanel, type OuAutomationHandle } from './ou-automation-panel';
 import { OU_AUTOMATION_PROVISION_FRAGMENT } from './ou-automation-provision';
+import { MFA_RECOVERY_PROVISION_FRAGMENT } from './mfa-recovery-provision';
+import { ADMIN_ROLE_TRUST_FRAGMENT } from './admin-role-provision';
 
 type AccountRecord = { accountId: string; remark?: string; name?: string; region: string; groupId?: string };
 type GroupRecord = { groupId: string; name: string };
@@ -12,6 +14,7 @@ type NewAccount = { remark: string; accountId: string; region: string; groupId: 
 type PermissionUser = { userId: string; userName: string; role: string; groupIds: string[]; configured?: boolean };
 const OPS_ACCOUNT_ID = '590184009438';
 const regions = ['us-east-1', 'us-west-2', 'ap-southeast-1', 'ap-northeast-1', 'eu-west-1'];
+const GROUP_DISPLAY_ORDER = ['老代付组', 'CMA组', '技术账号', 'VPN'];
 
 export function CloudAccessDashboard({ userName, userRole }: { userName: string; userRole: 'super_admin' | 'admin' | 'user' }) {
   const isAdmin = userRole === 'super_admin' || userRole === 'admin';
@@ -20,7 +23,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [query, setQuery] = useState('');
-  const [selectedGroup, setSelectedGroup] = useState('all');
+  const [selectedGroup, setSelectedGroup] = useState('');
   const [showAdd, setShowAdd] = useState(false);
   const [showAddGroup, setShowAddGroup] = useState(false);
   const [activeMenu, setActiveMenu] = useState('');
@@ -133,6 +136,19 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
       .sort((a, b) => String(a.name ?? a.id ?? '').localeCompare(String(b.name ?? b.id ?? ''), 'zh-CN'));
   }, [accounts, query, selectedGroup]);
 
+  const orderedGroups = useMemo(() => [...groups].sort((left, right) => {
+    const leftIndex = GROUP_DISPLAY_ORDER.indexOf(left.name);
+    const rightIndex = GROUP_DISPLAY_ORDER.indexOf(right.name);
+    if (leftIndex !== -1 || rightIndex !== -1) return (leftIndex === -1 ? GROUP_DISPLAY_ORDER.length : leftIndex) - (rightIndex === -1 ? GROUP_DISPLAY_ORDER.length : rightIndex);
+    return left.name.localeCompare(right.name, 'zh-CN');
+  }), [groups]);
+
+  useEffect(() => {
+    if (loading || orderedGroups.length === 0) return;
+    const timer = window.setTimeout(() => setSelectedGroup((current) => current && (current === 'ungrouped' || groups.some((group) => group.groupId === current)) ? current : orderedGroups[0].groupId), 0);
+    return () => window.clearTimeout(timer);
+  }, [groups, loading, orderedGroups]);
+
   const provisionCommand = useMemo(() => buildProvisionCommand(), []);
 
   async function copyText(value: string, key: string) {
@@ -175,7 +191,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
       setAccounts((current) => [...current, toManagedAccount(payload.account as AccountRecord)]);
       const selectedGroupName = groups.find((group) => group.groupId === newAccount.groupId)?.name;
       setShowAdd(false);
-      setNewAccount({ remark: '', accountId: '', region: 'us-east-1', groupId: selectedGroup !== 'all' && selectedGroup !== 'ungrouped' ? selectedGroup : '' });
+      setNewAccount({ remark: '', accountId: '', region: 'us-east-1', groupId: selectedGroup !== 'ungrouped' ? selectedGroup : '' });
       if (selectedGroupName === 'CMA组' || selectedGroupName === '老代付组') await ouAutomationRef.current?.initializeAccount(accountId);
       else setNotice(`${remark} 已添加`);
     } catch (error) {
@@ -272,15 +288,14 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
         <aside className="group-sidebar">
           <div className="sidebar-title"><h2>账号分组</h2>{isAdmin && <button onClick={() => setShowAddGroup(true)} aria-label="添加分组">+</button>}</div>
           <nav className="group-list">
-            <button className={selectedGroup === 'all' ? 'active' : ''} onClick={() => setSelectedGroup('all')}><span><i className="folder all" />全部账号</span><b>{accounts.length}</b></button>
-            {groups.map((group) => <button key={group.groupId} className={selectedGroup === group.groupId ? 'active' : ''} onClick={() => setSelectedGroup(group.groupId)} onDragOver={(event) => { if (isAdmin) event.preventDefault(); }} onDrop={(event) => { if (!isAdmin) return; event.preventDefault(); const accountId = event.dataTransfer.getData('text/account-id'); if (accountId) void changeGroup(accountId, group.groupId); }}><span><i className="folder" />{group.name}</span><b>{groupCount(group.groupId)}</b></button>)}
+            {orderedGroups.map((group) => <button key={group.groupId} className={selectedGroup === group.groupId ? 'active' : ''} onClick={() => setSelectedGroup(group.groupId)} onDragOver={(event) => { if (isAdmin) event.preventDefault(); }} onDrop={(event) => { if (!isAdmin) return; event.preventDefault(); const accountId = event.dataTransfer.getData('text/account-id'); if (accountId) void changeGroup(accountId, group.groupId); }}><span><i className="folder" />{group.name}</span><b>{groupCount(group.groupId)}</b></button>)}
             {(isAdmin || accounts.some((account) => !account.groupId)) && <button className={selectedGroup === 'ungrouped' ? 'active' : ''} onClick={() => setSelectedGroup('ungrouped')} onDragOver={(event) => { if (isAdmin) event.preventDefault(); }} onDrop={(event) => { if (!isAdmin) return; event.preventDefault(); const accountId = event.dataTransfer.getData('text/account-id'); if (accountId) void changeGroup(accountId, ''); }}><span><i className="folder empty" />未分组</span><b>{groupCount('ungrouped')}</b></button>}
           </nav>
         </aside>
 
         <section className="console-content">
           <div className="content-head">
-            <div><h1>{selectedGroup === 'all' ? '全部账号' : selectedGroup === 'ungrouped' ? '未分组' : groupNameFor(selectedGroup)}</h1><span>{visibleAccounts.length}</span></div>
+            <div><h1>{selectedGroup === 'ungrouped' ? '未分组' : groupNameFor(selectedGroup)}</h1><span>{visibleAccounts.length}</span></div>
           </div>
 
           {loading && <div className="accounts-layout">{[0,1,2,3].map((item) => <div className="account-tile loading-tile" key={item} />)}</div>}
@@ -383,9 +398,7 @@ cat >/tmp/tontian-operations-trust.json <<EOF_POLICY
 {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::\${OPS_ACCOUNT_ID}:role/TontianConsoleBrokerRole"},"Action":"sts:AssumeRole"}]}
 EOF_POLICY
 
-cat >/tmp/tontian-admin-trust.json <<EOF_ADMIN
-{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::\${OPS_ACCOUNT_ID}:root"},"Action":["sts:AssumeRole","sts:TagSession","sts:SetSourceIdentity"]}]}
-EOF_ADMIN
+${ADMIN_ROLE_TRUST_FRAGMENT}
 
 if aws iam get-role --role-name TontianOperationsRole >/dev/null 2>&1; then
   aws iam update-assume-role-policy --role-name TontianOperationsRole --policy-document file:///tmp/tontian-operations-trust.json
@@ -408,4 +421,5 @@ EOF_ORG
 aws iam put-role-policy --role-name TontianOperationsRole --policy-name TontianOrganizationOperations --policy-document file:///tmp/tontian-organization-operations.json
 aws iam attach-role-policy --role-name TontianAdminRole --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
 ${OU_AUTOMATION_PROVISION_FRAGMENT}
+${MFA_RECOVERY_PROVISION_FRAGMENT}
 echo "账号接入完成：$CURRENT_ACCOUNT_ID"`;}

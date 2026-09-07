@@ -1,6 +1,6 @@
 import { DynamoDBClient, GetItemCommand, PutItemCommand, QueryCommand, ScanCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
 import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
-import { AttachPolicyCommand, CreateOrganizationalUnitCommand, CreatePolicyCommand, DescribeOrganizationCommand, DescribePolicyCommand, EnablePolicyTypeCommand, ListAccountsCommand, ListOrganizationalUnitsForParentCommand, ListParentsCommand, ListPoliciesCommand, ListPoliciesForTargetCommand, ListRootsCommand, MoveAccountCommand, OrganizationsClient, UpdatePolicyCommand } from "@aws-sdk/client-organizations";
+import { AttachPolicyCommand, CreateOrganizationalUnitCommand, CreatePolicyCommand, DescribeOrganizationCommand, DescribePolicyCommand, DetachPolicyCommand, EnablePolicyTypeCommand, ListAccountsCommand, ListOrganizationalUnitsForParentCommand, ListParentsCommand, ListPoliciesCommand, ListPoliciesForTargetCommand, ListRootsCommand, MoveAccountCommand, OrganizationsClient, UpdateOrganizationalUnitCommand, UpdatePolicyCommand } from "@aws-sdk/client-organizations";
 
 const dynamodb = new DynamoDBClient({});
 const sts = new STSClient({});
@@ -11,9 +11,9 @@ const automationRole = "TontianOrganizationAutomationRole";
 const targetGroupNames = new Set((process.env.OU_AUTOMATION_GROUP_NAMES || "CMA组,老代付组").split(",").map((name) => name.trim()).filter(Boolean));
 const temporaryName = "临时";
 const restrictedName = "禁止 SP/RI";
+const restrictedPolicyName = "NEXUS-Restricted-Guardrails";
 const policyDocuments = {
-  "SP/RI-Deny": { Version: "2012-10-17", Statement: [{ Effect: "Deny", Action: ["savingsplans:*", "ec2:PurchaseReservedInstancesOffering", "rds:PurchaseReservedDBInstancesOffering"], Resource: "*" }] },
-  Organizations: { Version: "2012-10-17", Statement: [{ Effect: "Deny", Action: ["organizations:LeaveOrganization"], Resource: "*" }] },
+  [restrictedPolicyName]: { Version: "2012-10-17", Statement: [{ Effect: "Deny", Action: ["savingsplans:*", "ec2:PurchaseReservedInstancesOffering", "rds:PurchaseReservedDBInstancesOffering", "organizations:LeaveOrganization", "account:CloseAccount"], Resource: "*" }] },
 };
 
 function fail(message, statusCode = 400) { const error = new Error(message); error.statusCode = statusCode; throw error; }
@@ -89,7 +89,7 @@ async function inspect(accountId) {
 }
 
 function confirmationItems(value) {
-  return [
+  const items = [
     { kind: "temporary", targetName: temporaryName, detected: value.temporaryOu },
     { kind: "restricted", targetName: restrictedName, detected: value.restrictedOu },
   ].flatMap((item) => {
@@ -97,6 +97,8 @@ function confirmationItems(value) {
     if (item.detected.match === "compatible") return [{ kind: item.kind, action: "reuse", targetName: item.targetName, candidate: item.detected }];
     return [];
   });
+  if (!value.account.configured) items.push({ kind: "standardize", action: "standardize", targetName: "OU 名称和权限" });
+  return items;
 }
 
 function publicDiscovery(value) { return { account: value.account, temporaryOu: value.temporaryOu || null, restrictedOu: value.restrictedOu || null, temporaryOuId: value.temporaryOuId, restrictedOuId: value.restrictedOuId, confirmations: confirmationItems(value) }; }
@@ -105,6 +107,12 @@ async function resolveOu(client, rootId, detected, name) {
   if (detected) return detected;
   const created = (await client.send(new CreateOrganizationalUnitCommand({ ParentId: rootId, Name: name }))).OrganizationalUnit;
   return { id: created.Id, name: created.Name, match: "created" };
+}
+
+async function standardizeOuName(client, ou, name) {
+  if (ou.name === name) return ou;
+  const updated = (await client.send(new UpdateOrganizationalUnitCommand({ OrganizationalUnitId: ou.id, Name: name }))).OrganizationalUnit;
+  return { id: updated?.Id || ou.id, name: updated?.Name || name, match: ou.match };
 }
 
 async function listScps(client, rootId) {
@@ -124,6 +132,7 @@ function policyDocument(content) {
 }
 
 function sameSet(left, right) { return left.size === right.size && [...left].every((value) => right.has(value)); }
+function includesSet(source, required) { return [...required].every((value) => source.has(value)); }
 
 async function ouPolicyProfile(client, targetId) {
   const attached = [];
@@ -154,7 +163,7 @@ async function detectExistingOu(client, ous, storedId, targetName, kind) {
   const exact = ous.find((ou) => normalized(ou.name) === normalized(targetName));
   if (exact) return { ...exact, match: "exact" };
   const requiredActions = new Set(kind === "restricted"
-    ? ["savingsplans:*", "ec2:purchasereservedinstancesoffering", "rds:purchasereserveddbinstancesoffering", "organizations:leaveorganization"]
+    ? ["savingsplans:*", "ec2:purchasereservedinstancesoffering", "rds:purchasereserveddbinstancesoffering", "organizations:leaveorganization", "account:closeaccount"]
     : []);
   const candidates = [];
   for (const ou of ous) {
@@ -171,44 +180,104 @@ async function detectExistingOu(client, ous, storedId, targetName, kind) {
   return { id: candidates[0].id, name: candidates[0].name, match: candidates[0].match };
 }
 
+async function mappingCandidates(value) {
+  const restrictedActions = new Set(["savingsplans:*", "ec2:purchasereservedinstancesoffering", "rds:purchasereserveddbinstancesoffering"]);
+  const temporary = [];
+  const restricted = [];
+  for (const ou of value.ous) {
+    const profile = await ouPolicyProfile(value.client, ou.id);
+    if (similarNameScore(ou.name, temporaryName, "temporary") && profile.fullAccess && profile.customPolicies === 0) temporary.push(ou);
+    if (profile.fullAccess && profile.compatible && includesSet(profile.denyActions, restrictedActions)) restricted.push(ou);
+  }
+  if (value.temporaryOu && !temporary.some((ou) => ou.id === value.temporaryOu.id)) temporary.unshift(value.temporaryOu);
+  if (value.restrictedOu && !restricted.some((ou) => ou.id === value.restrictedOu.id)) restricted.unshift(value.restrictedOu);
+  return { temporary, restricted };
+}
+
 async function ensureScp(client, policies, name, document) {
   const content = JSON.stringify(document);
   let summary = policies.find((policy) => policy.Name === name && !policy.AwsManaged);
   if (!summary) summary = (await client.send(new CreatePolicyCommand({ Content: content, Description: `Managed by NEXUS: ${name}`, Name: name, Type: "SERVICE_CONTROL_POLICY" }))).Policy?.PolicySummary;
-  else if (canonical((await client.send(new DescribePolicyCommand({ PolicyId: summary.Id }))).Policy?.Content) !== canonical(content)) await client.send(new UpdatePolicyCommand({ PolicyId: summary.Id, Content: content, Description: `Managed by NEXUS: ${name}`, Name: name }));
+  else if (canonical((await client.send(new DescribePolicyCommand({ PolicyId: summary.Id }))).Policy?.Content) !== canonical(content)) {
+    if (!String(summary.Description || "").startsWith("Managed by NEXUS:")) fail(`检测到非 NEXUS 管理的同名 SCP：${name}，请先人工确认`);
+    await client.send(new UpdatePolicyCommand({ PolicyId: summary.Id, Content: content, Description: `Managed by NEXUS: ${name}`, Name: name }));
+  }
   if (!summary?.Id) fail(`无法创建或读取 SCP：${name}`);
   return summary.Id;
 }
 
-async function attach(client, targetId, policyId) {
+async function attachedScps(client, targetId) {
   const policies = [];
   let NextToken;
   do { const page = await client.send(new ListPoliciesForTargetCommand({ TargetId: targetId, Filter: "SERVICE_CONTROL_POLICY", NextToken })); policies.push(...(page.Policies || [])); NextToken = page.NextToken; } while (NextToken);
+  return policies;
+}
+
+async function attach(client, targetId, policyId) {
+  const policies = await attachedScps(client, targetId);
   if (!policies.some((policy) => policy.Id === policyId)) await client.send(new AttachPolicyCommand({ PolicyId: policyId, TargetId: targetId }));
 }
 
-async function configureFromInspection(value, useCompatible = true) {
-  const temporaryDetected = value.temporaryOu?.match === "compatible" && !useCompatible ? null : value.temporaryOu;
-  const restrictedDetected = value.restrictedOu?.match === "compatible" && !useCompatible ? null : value.restrictedOu;
-  const temporaryOu = await resolveOu(value.client, value.rootId, temporaryDetected, temporaryName);
-  const restrictedOu = await resolveOu(value.client, value.rootId, restrictedDetected, restrictedName);
+async function keepOnlyDirectPolicies(client, targetId, keepPolicyIds) {
+  const policies = await attachedScps(client, targetId);
+  for (const policy of policies) {
+    if (!policy.AwsManaged && policy.Id && !keepPolicyIds.has(policy.Id)) await client.send(new DetachPolicyCommand({ PolicyId: policy.Id, TargetId: targetId }));
+  }
+}
+
+async function configureFromInspection(value, useCompatible = true, selected = {}) {
+  const selectedTemporary = selected.temporaryOuId ? value.ous.find((ou) => ou.id === selected.temporaryOuId) : null;
+  const selectedRestricted = selected.restrictedOuId ? value.ous.find((ou) => ou.id === selected.restrictedOuId) : null;
+  if (selected.temporaryOuId && !selectedTemporary) fail("选择的临时 OU 不存在");
+  if (selected.restrictedOuId && !selectedRestricted) fail("选择的禁止 SP/RI OU 不存在");
+  const temporaryDetected = selected.createTemporary ? null : selectedTemporary || (value.temporaryOu?.match === "compatible" && !useCompatible ? null : value.temporaryOu);
+  const restrictedDetected = selected.createRestricted ? null : selectedRestricted || (value.restrictedOu?.match === "compatible" && !useCompatible ? null : value.restrictedOu);
+  const temporaryResolved = await resolveOu(value.client, value.rootId, temporaryDetected, temporaryName);
+  const restrictedResolved = await resolveOu(value.client, value.rootId, restrictedDetected, restrictedName);
+  const temporaryOu = await standardizeOuName(value.client, temporaryResolved, temporaryName);
+  const restrictedOu = await standardizeOuName(value.client, restrictedResolved, restrictedName);
   if (temporaryOu.id === restrictedOu.id) fail("临时和禁止 SP/RI 必须对应两个不同的 OU");
   const policies = await listScps(value.client, value.rootId);
   const fullAccessId = policies.find((policy) => policy.Name === "FullAWSAccess")?.Id;
-  const spRiId = await ensureScp(value.client, policies, "SP/RI-Deny", policyDocuments["SP/RI-Deny"]);
-  const organizationsId = await ensureScp(value.client, policies, "Organizations", policyDocuments.Organizations);
-  if (fullAccessId) { await attach(value.client, temporaryOu.id, fullAccessId); await attach(value.client, restrictedOu.id, fullAccessId); }
-  await attach(value.client, restrictedOu.id, spRiId);
-  await attach(value.client, restrictedOu.id, organizationsId);
+  if (!fullAccessId) fail("无法读取 AWS 托管策略 FullAWSAccess");
+  const restrictedPolicyId = await ensureScp(value.client, policies, restrictedPolicyName, policyDocuments[restrictedPolicyName]);
+  await attach(value.client, temporaryOu.id, fullAccessId);
+  await attach(value.client, restrictedOu.id, fullAccessId);
+  await attach(value.client, restrictedOu.id, restrictedPolicyId);
+  await keepOnlyDirectPolicies(value.client, temporaryOu.id, new Set());
+  await keepOnlyDirectPolicies(value.client, restrictedOu.id, new Set([restrictedPolicyId]));
   const updatedAt = new Date().toISOString();
   await dynamodb.send(new UpdateItemCommand({ TableName: accountsTable, Key: { accountId: { S: value.account.accountId } }, UpdateExpression: "SET temporaryOuId=:temporary, restrictedOuId=:restricted, ouAutomationUpdatedAt=:updated", ExpressionAttributeValues: { ":temporary": { S: temporaryOu.id }, ":restricted": { S: restrictedOu.id }, ":updated": { S: updatedAt } } }));
   return { accountId: value.account.accountId, temporaryOu, restrictedOu, configured: true, updatedAt };
 }
 
-async function configure(body) { const value = await inspect(String(body.accountId || "")); return configureFromInspection(value, body.useCompatible !== false); }
+async function mappingOptions(accountId) {
+  const value = await inspect(accountId);
+  const candidates = await mappingCandidates(value);
+  const ids = new Set([...candidates.temporary, ...candidates.restricted].map((ou) => ou.id));
+  return { accountId, options: value.ous.filter((ou) => ids.has(ou.id)), temporaryOuId: value.temporaryOuId, restrictedOuId: value.restrictedOuId, temporaryMissing: candidates.temporary.length === 0, restrictedMissing: candidates.restricted.length === 0 };
+}
+
+async function configureMapping(body) {
+  const value = await inspect(String(body.accountId || ""));
+  const temporaryOuId = String(body.temporaryOuId || "");
+  const restrictedOuId = String(body.restrictedOuId || "");
+  if (!temporaryOuId || !restrictedOuId) fail("请选择临时和禁止 SP/RI 对应的 OU");
+  if (temporaryOuId === restrictedOuId && temporaryOuId !== "__create__") fail("两个功能必须对应不同 OU");
+  return configureFromInspection(value, true, { temporaryOuId: temporaryOuId === "__create__" ? "" : temporaryOuId, restrictedOuId: restrictedOuId === "__create__" ? "" : restrictedOuId, createTemporary: temporaryOuId === "__create__", createRestricted: restrictedOuId === "__create__" });
+}
 
 async function initialize(accountId, options = {}) {
   const value = await inspect(accountId);
+  if (!value.account.configured) {
+    const candidates = await mappingCandidates(value);
+    if (candidates.temporary.length > 1 || candidates.restricted.length > 1) {
+      const ids = new Set([...candidates.temporary, ...candidates.restricted].map((ou) => ou.id));
+      return { mappingRequired: true, mapping: { accountId, options: value.ous.filter((ou) => ids.has(ou.id)), temporaryOuId: candidates.temporary.length === 0 ? "__create__" : candidates.temporary.length === 1 ? candidates.temporary[0].id : "", restrictedOuId: candidates.restricted.length === 0 ? "__create__" : candidates.restricted.length === 1 ? candidates.restricted[0].id : "", temporaryMissing: candidates.temporary.length === 0, restrictedMissing: candidates.restricted.length === 0 }, discovery: publicDiscovery(value) };
+    }
+    if (candidates.temporary.length === 1) value.temporaryOu = { ...candidates.temporary[0], match: "compatible" };
+    if (candidates.restricted.length === 1) value.restrictedOu = { ...candidates.restricted[0], match: "compatible" };
+  }
   const confirmations = confirmationItems(value);
   if (confirmations.length && !options.confirmed) return { confirmationRequired: true, confirmations, discovery: publicDiscovery(value) };
   return { confirmationRequired: false, configuration: await configureFromInspection(value, options.useCompatible !== false) };
@@ -358,7 +427,8 @@ export async function handleOuAutomationRequest({ method, body, identity }) {
   if (method !== "POST") fail("Method not allowed", 405);
   if (body.action === "discover") return discoverAccount(String(body.accountId || ""));
   if (body.action === "initialize") return initialize(String(body.accountId || ""), { confirmed: body.confirmed === true, useCompatible: body.useCompatible !== false });
-  if (body.action === "configure") return { configuration: await configure(body) };
+  if (body.action === "mapping-options") return { mapping: await mappingOptions(String(body.accountId || "")) };
+  if (body.action === "configure-mapping") return { configuration: await configureMapping(body) };
   if (body.action === "move-member") return { result: await moveMember(body) };
   if (body.action === "history") return { history: await movementHistory(String(body.accountId || "")) };
   if (body.action === "run") return { result: await reconcile(String(body.accountId || "")) };
