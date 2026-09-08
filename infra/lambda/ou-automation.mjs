@@ -58,26 +58,49 @@ async function context(account) {
 
 async function rootOus(client, rootId) {
   const result = [];
-  let NextToken;
-  do { const page = await client.send(new ListOrganizationalUnitsForParentCommand({ ParentId: rootId, NextToken })); result.push(...(page.OrganizationalUnits || []).map((ou) => ({ id: ou.Id, name: ou.Name }))); NextToken = page.NextToken; } while (NextToken);
-  return result.filter((ou) => ou.id && ou.name).sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+  const parents = [{ id: rootId, path: "" }];
+  for (let index = 0; index < parents.length; index += 1) {
+    const parent = parents[index];
+    let NextToken;
+    do {
+      const page = await client.send(new ListOrganizationalUnitsForParentCommand({ ParentId: parent.id, NextToken }));
+      for (const ou of page.OrganizationalUnits || []) {
+        if (!ou.Id || !ou.Name) continue;
+        const path = parent.path ? `${parent.path} / ${ou.Name}` : ou.Name;
+        result.push({ id: ou.Id, name: ou.Name, parentId: parent.id, path });
+        parents.push({ id: ou.Id, path });
+      }
+      NextToken = page.NextToken;
+    } while (NextToken);
+  }
+  return result.sort((a, b) => a.path.localeCompare(b.path, "zh-CN") || a.id.localeCompare(b.id));
 }
 
 async function inspect(accountId) {
   const account = await requireAccount(accountId);
   const organization = await context(account);
   const ous = await rootOus(organization.client, organization.rootId);
-  const temporaryOu = ous.find((ou) => normalized(ou.name) === normalized(temporaryName)) || null;
-  const restrictedOu = ous.find((ou) => normalized(ou.name) === normalized(restrictedName)) || null;
+  const temporaryMatches = ous.filter((ou) => normalized(ou.name) === normalized(temporaryName));
+  const restrictedMatches = ous.filter((ou) => normalized(ou.name) === normalized(restrictedName));
+  const temporaryOu = ous.find((ou) => ou.id === account.temporaryOuId) || (temporaryMatches.length === 1 ? temporaryMatches[0] : null);
+  const restrictedOu = ous.find((ou) => ou.id === account.restrictedOuId) || (restrictedMatches.length === 1 ? restrictedMatches[0] : null);
   return { ...organization, account, ous, temporaryOu, restrictedOu, temporaryOuId: temporaryOu?.id || "", restrictedOuId: restrictedOu?.id || "" };
 }
 
 function publicAccount(account) { const { memberCache, ...value } = account; return value; }
-function publicDiscovery(value) { return { account: publicAccount(value.account), temporaryOu: value.temporaryOu || null, restrictedOu: value.restrictedOu || null, temporaryOuId: value.temporaryOuId, restrictedOuId: value.restrictedOuId }; }
+function publicDiscovery(value) { return { account: publicAccount(value.account), ous: value.ous || [], temporaryOu: value.temporaryOu || null, restrictedOu: value.restrictedOu || null, temporaryOuId: value.temporaryOuId, restrictedOuId: value.restrictedOuId }; }
 
-async function resolveOu(client, rootId, detected, name) {
-  if (detected) return detected;
-  const created = (await client.send(new CreateOrganizationalUnitCommand({ ParentId: rootId, Name: name }))).OrganizationalUnit;
+async function resolveOu(value, selectedId, name, allowCreate) {
+  if (selectedId) {
+    const selected = value.ous.find((ou) => ou.id === selectedId);
+    if (!selected) fail(`选择的“${name}”OU 不存在，请重新扫描`);
+    return selected;
+  }
+  const matches = value.ous.filter((ou) => normalized(ou.name) === normalized(name));
+  if (matches.length > 1) fail(`检测到多个“${name}”OU，请按 OU ID 明确选择`);
+  if (matches.length === 1) return matches[0];
+  if (!allowCreate) fail(`没有找到“${name}”OU，请明确选择是否创建`);
+  const created = (await value.client.send(new CreateOrganizationalUnitCommand({ ParentId: value.rootId, Name: name }))).OrganizationalUnit;
   return { id: created.Id, name: created.Name, match: "created" };
 }
 
@@ -117,16 +140,14 @@ async function attach(client, targetId, policyId) {
   if (!policies.some((policy) => policy.Id === policyId)) await client.send(new AttachPolicyCommand({ PolicyId: policyId, TargetId: targetId }));
 }
 
-async function keepOnlyDirectPolicies(client, targetId, keepPolicyIds) {
+async function detachIfAttached(client, targetId, policyId) {
   const policies = await attachedScps(client, targetId);
-  for (const policy of policies) {
-    if (!policy.AwsManaged && policy.Id && !keepPolicyIds.has(policy.Id)) await client.send(new DetachPolicyCommand({ PolicyId: policy.Id, TargetId: targetId }));
-  }
+  if (policies.some((policy) => policy.Id === policyId)) await client.send(new DetachPolicyCommand({ PolicyId: policyId, TargetId: targetId }));
 }
 
-async function configureFromInspection(value) {
-  const temporaryOu = await resolveOu(value.client, value.rootId, value.temporaryOu, temporaryName);
-  const restrictedOu = await resolveOu(value.client, value.rootId, value.restrictedOu, restrictedName);
+async function configureFromInspection(value, mapping = {}) {
+  const temporaryOu = await resolveOu(value, String(mapping.temporaryOuId || ""), temporaryName, mapping.createTemporary === true);
+  const restrictedOu = await resolveOu(value, String(mapping.restrictedOuId || ""), restrictedName, mapping.createRestricted === true);
   if (temporaryOu.id === restrictedOu.id) fail("临时和禁止 SP/RI 必须对应两个不同的 OU");
   const policies = await listScps(value.client, value.rootId);
   const fullAccessId = policies.find((policy) => policy.Name === "FullAWSAccess")?.Id;
@@ -135,17 +156,22 @@ async function configureFromInspection(value) {
   await attach(value.client, temporaryOu.id, fullAccessId);
   await attach(value.client, restrictedOu.id, fullAccessId);
   await attach(value.client, restrictedOu.id, restrictedPolicyId);
-  await keepOnlyDirectPolicies(value.client, temporaryOu.id, new Set());
-  await keepOnlyDirectPolicies(value.client, restrictedOu.id, new Set([restrictedPolicyId]));
+  await detachIfAttached(value.client, temporaryOu.id, restrictedPolicyId);
   const updatedAt = new Date().toISOString();
   await dynamodb.send(new UpdateItemCommand({ TableName: accountsTable, Key: { accountId: { S: value.account.accountId } }, UpdateExpression: "SET temporaryOuId=:temporary, restrictedOuId=:restricted, ouAutomationUpdatedAt=:updated", ExpressionAttributeValues: { ":temporary": { S: temporaryOu.id }, ":restricted": { S: restrictedOu.id }, ":updated": { S: updatedAt } } }));
   return { accountId: value.account.accountId, temporaryOu, restrictedOu, configured: true, updatedAt };
 }
-async function initialize(accountId) {
-  const value = await inspect(accountId);
-  const configuration = await configureFromInspection(value);
-  const result = await reconcile(accountId);
-  return { configuration, result };
+async function initialize(body) {
+  const value = await inspect(String(body.accountId || ""));
+  const configuration = await configureFromInspection(value, body);
+  value.account.temporaryOuId = configuration.temporaryOu.id;
+  value.account.restrictedOuId = configuration.restrictedOu.id;
+  value.account.configured = true;
+  value.temporaryOu = configuration.temporaryOu;
+  value.restrictedOu = configuration.restrictedOu;
+  value.temporaryOuId = configuration.temporaryOu.id;
+  value.restrictedOuId = configuration.restrictedOu.id;
+  return { configuration, discovery: publicDiscovery(value), members: value.account.memberCache?.members || [] };
 }
 
 async function organizationAccounts(client) { const result = []; let NextToken; do { const page = await client.send(new ListAccountsCommand({ NextToken })); result.push(...(page.Accounts || [])); NextToken = page.NextToken; } while (NextToken); return result; }
@@ -223,9 +249,10 @@ async function saveMemberCache(account, members) {
 async function discoverAccount(accountId) {
   const account = await requireAccount(accountId);
   if (account.configured && Array.isArray(account.memberCache?.members)) {
-    return { discovery: { account: publicAccount(account), temporaryOu: { id: account.temporaryOuId, name: temporaryName }, restrictedOu: { id: account.restrictedOuId, name: restrictedName }, temporaryOuId: account.temporaryOuId, restrictedOuId: account.restrictedOuId }, members: account.memberCache.members, cached: true, cachedAt: account.memberCache.cachedAt || "" };
+    return { discovery: { account: publicAccount(account), ous: [], temporaryOu: { id: account.temporaryOuId, name: temporaryName }, restrictedOu: { id: account.restrictedOuId, name: restrictedName }, temporaryOuId: account.temporaryOuId, restrictedOuId: account.restrictedOuId }, members: account.memberCache.members, cached: true, cachedAt: account.memberCache.cachedAt || "" };
   }
   const value = await inspect(accountId);
+  if (!account.configured) return { discovery: publicDiscovery(value), members: [], cached: false, cachedAt: "" };
   const members = await memberDirectory(value);
   await saveMemberCache(value.account, members);
   return { discovery: publicDiscovery(value), members, cached: false, cachedAt: value.account.memberCache?.cachedAt || "" };
@@ -291,7 +318,8 @@ export async function handleOuAutomationRequest({ method, body, identity }) {
   if (method === "GET") return { accounts: await listAccounts(), targetGroups: [...targetGroupNames] };
   if (method !== "POST") fail("Method not allowed", 405);
   if (body.action === "discover") return discoverAccount(String(body.accountId || ""));
-  if (body.action === "initialize") return initialize(String(body.accountId || ""));
+  if (body.action === "ou-options") return { discovery: publicDiscovery(await inspect(String(body.accountId || ""))) };
+  if (body.action === "initialize") return initialize(body);
   if (body.action === "history") return { history: await movementHistory(String(body.accountId || "")) };
   if (body.action === "run") return { result: await reconcile(String(body.accountId || "")) };
   if (body.action === "run-all") return runScheduledOuAutomation();
