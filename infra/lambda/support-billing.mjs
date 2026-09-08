@@ -61,14 +61,17 @@ async function listPayers() {
 }
 
 function payerFromItem(item, groupName) {
-  const snapshot = normalizeMappingStatuses(parseJson(itemValue(item, "supportBillingSnapshot"), null));
+  const architecture = pmaGroupNames.has(groupName) ? "pma" : "legacy_payer";
+  const autoSyncOverrides = normalizeAutoSyncOverrides(parseJson(itemValue(item, "supportBillingAutoSyncOverrides"), {}));
+  const snapshot = decorateAutoSync({ architecture, autoSyncOverrides }, normalizeMappingStatuses(parseJson(itemValue(item, "supportBillingSnapshot"), null)));
   return {
     accountId: item.accountId.S,
     remark: item.remark?.S || item.name?.S || item.accountId.S,
     region: item.region?.S || "us-east-1",
     groupId: item.groupId?.S || "",
     groupName: canonicalGroupName(groupName),
-    architecture: pmaGroupNames.has(groupName) ? "pma" : "legacy_payer",
+    architecture,
+    autoSyncOverrides,
     lastScanAt: itemValue(item, "supportBillingLastScanAt"),
     lastAutoSyncAt: itemValue(item, "supportBillingLastAutoSyncAt"),
     lastStatus: itemValue(item, "supportBillingLastStatus"),
@@ -83,7 +86,22 @@ function payerFromItem(item, groupName) {
 }
 
 function publicPayer(payer) {
-  return { accountId: payer.accountId, remark: payer.remark, groupName: payer.groupName, architecture: payer.architecture, lastScanAt: payer.lastScanAt, lastStatus: payer.lastStatus, lastMessage: payer.lastMessage, accountCount: payer.accountCount, pendingCount: payer.pendingCount, blockedCount: payer.blockedCount };
+  return { accountId: payer.accountId, remark: payer.remark, groupName: payer.groupName, architecture: payer.architecture, autoSyncOverrides: payer.autoSyncOverrides, lastScanAt: payer.lastScanAt, lastStatus: payer.lastStatus, lastMessage: payer.lastMessage, accountCount: payer.accountCount, pendingCount: payer.pendingCount, blockedCount: payer.blockedCount };
+}
+
+function normalizeAutoSyncOverrides(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).filter(([accountId, enabled]) => /^\d{12}$/.test(accountId) && typeof enabled === "boolean"));
+}
+
+function accountAutoSyncEnabled(payer, accountId) {
+  return Object.hasOwn(payer.autoSyncOverrides || {}, accountId) ? payer.autoSyncOverrides[accountId] : payer.architecture === "pma";
+}
+
+function decorateAutoSync(payer, snapshot) {
+  if (!snapshot?.accounts) return snapshot;
+  for (const account of snapshot.accounts) account.autoSyncEnabled = accountAutoSyncEnabled(payer, account.id);
+  return snapshot;
 }
 
 async function requirePayer(accountId) {
@@ -154,7 +172,7 @@ function readHistoricalSnapshot(payer, month) {
   if (!data) return null;
   try {
     const snapshot = JSON.parse(gunzipSync(data, { maxOutputLength: 4_000_000 }).toString("utf8"));
-    return snapshot?.historyMonth === month && Array.isArray(snapshot.accounts) ? normalizeMappingStatuses(snapshot) : null;
+    return snapshot?.historyMonth === month && Array.isArray(snapshot.accounts) ? decorateAutoSync(payer, normalizeMappingStatuses(snapshot)) : null;
   } catch { return null; }
 }
 
@@ -288,7 +306,7 @@ function periodItem(accountId, aws, candidates, activeItems, period, queryError,
   const exact = candidates.length === 1 && !duplicate && !carryovers.length ? candidates[0] : null;
   return { aws: cents(aws), synced: cents(synced), status: state, suggestion, billingGroupMember: member, billingGroupArn: groupArn, customLineItemArn: exact?.Arn || null, customLineItemName: exact?.Name || null, managedCustomLineItems: activeManaged.map((item) => ({ arn: item.Arn, name: item.Name, accountId: item.AccountId, chargeValue: cents(cliAmount(item)), originalPeriod: canonicalPeriod(item, accountId), activePeriod: period })) };
 }
-function accountShell(id, name, payer) { return { id, name, cma: "未识别 CMA", sourceAccountId: payer.accountId, architecture: payer.architecture, current: null, previous: null, history: [] }; }
+function accountShell(id, name, payer) { return { id, name, cma: "未识别 CMA", sourceAccountId: payer.accountId, architecture: payer.architecture, autoSyncEnabled: accountAutoSyncEnabled(payer, id), current: null, previous: null, history: [] }; }
 
 async function conductorData(clients, periods) {
   const groups = {}; const items = {};
@@ -386,6 +404,26 @@ async function saveSnapshot(payer, snapshot, status, message, automatic = false)
   await dynamodb.send(new UpdateItemCommand({ TableName: accountsTable, Key: { accountId: { S: payer.accountId } }, UpdateExpression: expression, ExpressionAttributeValues: values }));
   payer.snapshot = snapshot; payer.lastScanAt = snapshot.lastScanAt;
   return snapshot;
+}
+
+async function saveAutoSyncPreference(payer) {
+  await dynamodb.send(new UpdateItemCommand({
+    TableName: accountsTable,
+    Key: { accountId: { S: payer.accountId } },
+    ConditionExpression: "attribute_exists(accountId)",
+    UpdateExpression: "SET supportBillingAutoSyncOverrides=:overrides",
+    ExpressionAttributeValues: { ":overrides": { S: JSON.stringify(payer.autoSyncOverrides) } },
+  }));
+}
+
+async function setAutoSyncAction(payer, targetAccountId, enabled, persist = saveAutoSyncPreference) {
+  const accountId = String(targetAccountId || "");
+  if (!/^\d{12}$/.test(accountId)) fail("成员账号 ID 不正确");
+  if (typeof enabled !== "boolean") fail("自动同步开关状态不正确");
+  payer.autoSyncOverrides = { ...(payer.autoSyncOverrides || {}), [accountId]: enabled };
+  decorateAutoSync(payer, payer.snapshot);
+  await persist(payer);
+  return { payer: publicPayer(payer), snapshot: payer.snapshot };
 }
 
 async function markFailure(payer, message) {
@@ -562,11 +600,12 @@ async function sendSupportSyncNotification(payer, snapshot, periodKey, targets, 
 async function syncAction(payer, periodKey, targets, automatic = false, persist = saveSnapshot) {
   const clients = await clientsFor(payer);
   let snapshot = await scanWithClients(payer, clients, automatic ? ["current"] : ["current", "previous"]);
-  const beforeSync = new Map(snapshot.accounts.filter((account) => !targets || targets.has(account.id)).map((account) => [account.id, { synced: account[periodKey].synced, status: account[periodKey].status }]));
-  const repair = await repairRanges(clients, snapshot, periodKey, targets);
+  const writeTargets = automatic ? new Set(snapshot.accounts.filter((account) => accountAutoSyncEnabled(payer, account.id)).map((account) => account.id)) : targets;
+  const beforeSync = new Map(snapshot.accounts.filter((account) => !writeTargets || writeTargets.has(account.id)).map((account) => [account.id, { synced: account[periodKey].synced, status: account[periodKey].status }]));
+  const repair = await repairRanges(clients, snapshot, periodKey, writeTargets);
   if (repair.repaired) snapshot = await scanWithClients(payer, clients, automatic ? ["current"] : ["current", "previous"], snapshot);
-  const result = await writeSync(payer, clients, snapshot, periodKey, targets, automatic, repair.repaired, repair.failed, persist);
-  try { await sendSupportSyncNotification(payer, result.snapshot, periodKey, targets, automatic, result.summary, beforeSync); }
+  const result = await writeSync(payer, clients, snapshot, periodKey, writeTargets, automatic, repair.repaired, repair.failed, persist);
+  try { await sendSupportSyncNotification(payer, result.snapshot, periodKey, writeTargets, automatic, result.summary, beforeSync); }
   catch (error) { console.error("Support billing WeCom notification failed", error); }
   return result;
 }
@@ -622,17 +661,22 @@ export async function runScheduledSupportBilling() {
 }
 
 export async function runLocalSupportBillingAction({ payer: source, state = {}, body, persist }) {
-  const payer = { ...source, snapshot: normalizeMappingStatuses(state.snapshot || null), suppressions: new Set(state.suppressions || []), lastScanAt: state.lastScanAt || "", lastAutoSyncAt: state.lastAutoSyncAt || "" };
+  const autoSyncOverrides = normalizeAutoSyncOverrides(state.autoSyncOverrides || source.autoSyncOverrides || {});
+  const payer = { ...source, autoSyncOverrides, snapshot: null, suppressions: new Set(state.suppressions || []), lastScanAt: state.lastScanAt || "", lastAutoSyncAt: state.lastAutoSyncAt || "" };
+  payer.snapshot = decorateAutoSync(payer, normalizeMappingStatuses(state.snapshot || null));
   const saveLocal = async (target, snapshot, status, message, automatic = false) => {
     target.snapshot = snapshot;
     target.lastScanAt = snapshot.lastScanAt;
     if (automatic) target.lastAutoSyncAt = new Date().toISOString();
-    await persist({ ...state, snapshot, suppressions: [...target.suppressions], status, message, lastScanAt: snapshot.lastScanAt, lastAutoSyncAt: target.lastAutoSyncAt || "" });
+    await persist({ ...state, snapshot, autoSyncOverrides: target.autoSyncOverrides, suppressions: [...target.suppressions], status, message, lastScanAt: snapshot.lastScanAt, lastAutoSyncAt: target.lastAutoSyncAt || "" });
     return snapshot;
   };
+  if (body.action === "set_auto_sync") return setAutoSyncAction(payer, body.targetAccountId, body.enabled, async (target) => {
+    await persist({ ...state, snapshot: target.snapshot, autoSyncOverrides: target.autoSyncOverrides, suppressions: [...target.suppressions], lastScanAt: target.lastScanAt || "", lastAutoSyncAt: target.lastAutoSyncAt || "" });
+  });
   const period = requestedPeriod(body.period);
   if (period !== "current" && period !== "previous") {
-    if (body.action === "snapshot") return { payer: publicPayer(payer), snapshot: state.historicalSnapshots?.[period] || null };
+    if (body.action === "snapshot") return { payer: publicPayer(payer), snapshot: decorateAutoSync(payer, state.historicalSnapshots?.[period] || null) };
     if (body.action !== "scan") fail("历史账期仅支持查看，不能同步或删除");
     const snapshot = await scanHistoricalAction(payer, period, async (_payer, value) => {
       const allowed = new Set(historicalPeriods().map((item) => item.billingPeriod));
@@ -654,6 +698,7 @@ export async function handleSupportBillingRequest({ method, body, identity }) {
   if (method === "GET") return { payers: (await listPayers()).map(publicPayer) };
   if (method !== "POST") fail("Method not allowed", 405);
   const payer = await requirePayer(String(body.accountId || ""));
+  if (body.action === "set_auto_sync") return setAutoSyncAction(payer, body.targetAccountId, body.enabled);
   const period = requestedPeriod(body.period);
   if (period !== "current" && period !== "previous") {
     if (body.action === "snapshot") return { payer: publicPayer(payer), snapshot: readHistoricalSnapshot(payer, period) };

@@ -8,9 +8,9 @@ type PeriodKey = 'current' | 'previous';
 type SelectedPeriod = PeriodKey | `${number}-${number}`;
 type Status = 'normal' | 'create' | 'update' | 'native_visible' | 'query_error' | 'zero_risk' | 'mapping_error' | 'mapping_ignored' | 'duplicate_cli' | 'period_range_error' | 'manual_deleted';
 type BillingPeriod = { aws: number | null; synced: number | null; status: Status; suggestion: string; billingGroupMember: boolean; customLineItemArn?: string; customLineItemName?: string };
-type BillingAccount = { id: string; name: string; cma: string; current: BillingPeriod; previous: BillingPeriod; historical?: BillingPeriod; history?: { date: string; action: string; amount: string }[] };
+type BillingAccount = { id: string; name: string; cma: string; autoSyncEnabled?: boolean; current: BillingPeriod; previous: BillingPeriod; historical?: BillingPeriod; history?: { date: string; action: string; amount: string }[] };
 type Snapshot = { lastScanAt: string; months: Record<PeriodKey, string>; historyMonth?: string; accounts: BillingAccount[] };
-type Payer = { accountId: string; remark: string; groupName: string; architecture: 'pma' | 'legacy_payer'; lastScanAt: string; lastStatus: string; lastMessage: string; accountCount: number; pendingCount: number; blockedCount: number };
+type Payer = { accountId: string; remark: string; groupName: string; architecture: 'pma' | 'legacy_payer'; autoSyncOverrides?: Record<string, boolean>; lastScanAt: string; lastStatus: string; lastMessage: string; accountCount: number; pendingCount: number; blockedCount: number };
 type ConfirmAction = 'sync' | 'delete';
 type RowFilter = 'all' | 'pending' | 'blocked' | 'synced';
 type PayerState = 'pending' | 'abnormal' | 'unscanned' | 'normal';
@@ -26,6 +26,17 @@ const money = (value: number | null | undefined) => value === null || value === 
 const historicalMonthFor = (period: SelectedPeriod) => period === 'current' || period === 'previous' ? undefined : period;
 const unreadPeriod: BillingPeriod = { aws: null, synced: null, status: 'query_error', suggestion: '尚未读取', billingGroupMember: false };
 const payerStateText: Record<PayerState, string> = { pending: '待处理', abnormal: '异常', unscanned: '未扫描', normal: '正常' };
+
+function accountAutoSyncEnabled(account: BillingAccount, payer?: Payer) {
+  const override = payer?.autoSyncOverrides?.[account.id];
+  if (typeof override === 'boolean') return override;
+  if (typeof account.autoSyncEnabled === 'boolean') return account.autoSyncEnabled;
+  return payer?.architecture === 'pma';
+}
+
+function withAutoSync(snapshot: Snapshot, accountId: string, enabled: boolean): Snapshot {
+  return { ...snapshot, accounts: snapshot.accounts.map((account) => account.id === accountId ? { ...account, autoSyncEnabled: enabled } : account) };
+}
 
 function payerState(item: Payer): PayerState {
   if (!item.lastScanAt) return 'unscanned';
@@ -215,6 +226,27 @@ export function SupportBillingPanel({ onNotice }: { onNotice: (message: string) 
     finally { mutationRef.current = false; setMutating(false); }
   }
 
+  async function setAccountAutoSync(account: BillingAccount, enabled: boolean) {
+    const payerId = selectedPayerRef.current;
+    if (!payerId || busy || mutationRef.current) return;
+    mutationRef.current = true;
+    setMutating(true); setLoadError('');
+    try {
+      const payload = await request({ action: 'set_auto_sync', accountId: payerId, targetAccountId: account.id, enabled }) as { payer?: Payer; snapshot?: Snapshot };
+      setPayers((current) => current.map((item) => item.accountId === payerId ? (payload.payer ?? { ...item, autoSyncOverrides: { ...(item.autoSyncOverrides ?? {}), [account.id]: enabled } }) : item));
+      const historyMonth = historicalMonthFor(periodRef.current);
+      const nextSnapshot = historyMonth ? (snapshot ? withAutoSync(snapshot, account.id, enabled) : null) : payload.snapshot ?? (snapshot ? withAutoSync(snapshot, account.id, enabled) : null);
+      if (nextSnapshot) {
+        cacheRef.current?.put(payerId, { snapshot: nextSnapshot, preview }, historyMonth);
+        setSnapshot(nextSnapshot);
+      }
+      onNotice(`${account.name} 自动同步已${enabled ? '开启' : '关闭'}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '自动同步设置失败';
+      setLoadError(message); onNotice(message);
+    } finally { mutationRef.current = false; setMutating(false); }
+  }
+
   function closePanel() {
     if (mutationRef.current) return;
     openRef.current = false;
@@ -278,7 +310,7 @@ export function SupportBillingPanel({ onNotice }: { onNotice: (message: string) 
             <div className={styles.stats}><button className={rowFilter === 'pending' ? styles.statActive : ''} onClick={() => { setRowFilter((current) => current === 'pending' ? 'all' : 'pending'); setSelected([]); }}><b>{summary.pending}</b>待处理</button><button className={rowFilter === 'all' ? styles.statActive : ''} onClick={() => { setRowFilter('all'); setSelected([]); }}><b>{snapshot?.accounts.length ?? 0}</b>账号</button><button className={rowFilter === 'blocked' ? styles.statActive : ''} onClick={() => { setRowFilter((current) => current === 'blocked' ? 'all' : 'blocked'); setSelected([]); }}><b>{summary.blocked}</b>已拦截</button><button className={rowFilter === 'synced' ? styles.statActive : ''} onClick={() => { setRowFilter((current) => current === 'synced' ? 'all' : 'synced'); setSelected([]); }}><b>{summary.synced}</b>已同步</button><input value={memberQuery} onChange={(event) => setMemberQuery(event.target.value)} placeholder="搜索名称或账号 ID" /></div>
             <div className={styles.actions}><span aria-live="polite">{selected.length > 0 ? `已选择 ${selected.length} 个账号` : ''}</span><div><button disabled={busy || selectableRows.length === 0} onClick={() => setSelected(allSelectableSelected ? [] : selectableRows.map((account) => account.id))}>{allSelectableSelected ? '取消全选' : '一键选择'}</button><button disabled={busy || !deletable} onClick={() => setConfirm('delete')}>删除账单项</button><button className={styles.primary} disabled={busy || !syncable} onClick={() => setConfirm('sync')}>同步选中</button></div></div>
             {readOnlyPeriod && <p className={styles.readOnlyHint}>历史月份仅查看对账结果；AWS 只支持修改本月和上月账单。</p>}
-            <div className={styles.tableWrap}><table><thead><tr><th>选择</th><th>成员账号</th><th>账期</th><th>账单组</th><th>AWS Support</th><th>当前同步</th><th>差额</th><th>状态</th></tr></thead><tbody>{busy && !snapshot ? <tr><td colSpan={8}>正在读取...</td></tr> : rows.length === 0 ? <tr><td colSpan={8}>暂无扫描结果</td></tr> : rows.map((account) => { const item = periodItem(account); const selectable = !readOnlyPeriod && (safeToSync(item.status) || canDelete(account, recentPeriod, billingMonth)); const difference = item.aws === null ? null : item.aws - (item.synced ?? 0); return <tr key={account.id} data-risk={risky(item.status)}><td><input type="checkbox" disabled={busy || !selectable} checked={selected.includes(account.id)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, account.id] : current.filter((value) => value !== account.id))} /></td><td><strong>{account.name}</strong><small>{account.id}</small></td><td className={styles.billingMonth}>{billingMonthLabel}</td><td>{payer?.architecture === 'pma' ? account.cma : item.billingGroupMember ? '已加入' : '原生可见'}</td><td>{money(item.aws)}</td><td>{money(item.synced)}</td><td>{difference === null ? '—' : `${difference > 0 ? '+' : ''}${money(difference)}`}</td><td><span data-status={item.status}>{statusText[item.status] ?? item.suggestion}</span></td></tr>; })}</tbody></table></div>
+            <div className={styles.tableWrap}><table><thead><tr><th>选择</th><th>成员账号</th><th>账期</th><th>账单组 / 同步资格</th><th>自动同步</th><th>最近同步</th><th>AWS Support</th><th>当前同步</th><th>差额</th><th>状态</th></tr></thead><tbody>{busy && !snapshot ? <tr><td colSpan={10}>正在读取...</td></tr> : rows.length === 0 ? <tr><td colSpan={10}>暂无扫描结果</td></tr> : rows.map((account) => { const item = periodItem(account); const selectable = !readOnlyPeriod && (safeToSync(item.status) || canDelete(account, recentPeriod, billingMonth)); const difference = item.aws === null ? null : item.aws - (item.synced ?? 0); const autoSync = accountAutoSyncEnabled(account, payer); const lastSync = account.history?.find((entry) => entry.action !== '删除'); return <tr key={account.id} data-risk={risky(item.status)}><td><input type="checkbox" disabled={busy || !selectable} checked={selected.includes(account.id)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, account.id] : current.filter((value) => value !== account.id))} /></td><td><strong>{account.name}</strong><small>{account.id}</small></td><td className={styles.billingMonth}>{billingMonthLabel}</td><td>{billingGroupLabel(payer?.architecture, account.cma, item, readOnlyPeriod)}</td><td><button type="button" aria-pressed={autoSync} title={autoSync ? '每两天扫描时允许自动同步；人工同步始终可用' : '自动写入已关闭；扫描展示和人工同步不受影响'} className={`${styles.autoSyncToggle} ${autoSync ? styles.autoSyncOn : styles.autoSyncOff}`} disabled={busy} onClick={() => void setAccountAutoSync(account, !autoSync)}>{autoSync ? '已开启' : '已关闭'}</button></td><td className={styles.lastSync}>{lastSync ? <><time dateTime={lastSync.date}>{formatTime(lastSync.date)}</time><small>{lastSync.action}</small></> : '暂无记录'}</td><td>{money(item.aws)}</td><td>{money(item.synced)}</td><td>{difference === null ? '—' : `${difference > 0 ? '+' : ''}${money(difference)}`}</td><td><span data-status={item.status}>{statusText[item.status] ?? item.suggestion}</span></td></tr>; })}</tbody></table></div>
           </main>
         </div>
         {confirm && <div className={styles.confirmLayer}><section className={styles.confirm}><span>CONFIRM ACTION</span><h3>{confirm === 'delete' ? '删除账单项' : '同步 Support 费用'}</h3><p>{busy ? '正在读取 AWS 数据并修正账单周期，请不要关闭页面。' : `将处理 ${selected.length} 个成员账号。系统会重新读取 AWS 数据，通过安全校验后才会写入。`}</p><div><button disabled={busy} onClick={() => setConfirm(null)}>取消</button><button className={styles.primary} disabled={busy} onClick={() => void perform()}>{busy ? '处理中...' : '确认执行'}</button></div></section></div>}
@@ -290,6 +322,15 @@ export function SupportBillingPanel({ onNotice }: { onNotice: (message: string) 
 function canDelete(account: BillingAccount, period: PeriodKey, month?: string) {
   const item = account[period];
   return Boolean(month && item.customLineItemArn && item.customLineItemName === `AWSBusinessSupportPlus_${account.id}_${month.replace('-', '')}`);
+}
+
+function billingGroupLabel(architecture: Payer['architecture'] | undefined, cma: string, item: BillingPeriod, readOnly: boolean) {
+  if (architecture === 'pma') return cma;
+  if ((item.aws ?? 0) > 0) {
+    if (!item.billingGroupMember) return '未在账单组 · 不同步';
+    return readOnly ? '已在账单组 · 历史只读' : '已在账单组';
+  }
+  return item.billingGroupMember ? '已加入' : '原生可见';
 }
 
 function rowPriority(item: BillingPeriod) {

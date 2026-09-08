@@ -8,7 +8,6 @@ type OuOption = { id: string; name: string; match?: 'created' };
 type AutomationAccount = { accountId: string; remark: string; groupName: string; temporaryOuId: string; restrictedOuId: string; configured: boolean };
 type Discovery = { account: AutomationAccount; temporaryOu: OuOption | null; restrictedOu: OuOption | null; temporaryOuId: string; restrictedOuId: string };
 type MemberAccount = { accountId: string; name: string; email: string; parentId: string; parentName: string; placement: 'ungrouped' | 'restricted' | 'temporary' | 'other' };
-type MoveDestination = 'restricted' | 'temporary';
 type MovedAccount = { accountId: string; name: string; email: string; sourceParentName: string; destinationParentName: string };
 type HistoryEntry = { payerAccountId: string; payerRemark: string; occurredAt: string; mode: 'automatic' | 'manual'; status: 'success' | 'failed'; checked: number; moved: number; skipped: number; message: string; movedAccounts: MovedAccount[] };
 
@@ -26,7 +25,6 @@ export const OuAutomationPanel = forwardRef<OuAutomationHandle, { onNotice: (mes
   const [memberFilter, setMemberFilter] = useState<'all' | MemberAccount['placement']>('all');
   const [selectedMemberId, setSelectedMemberId] = useState('');
   const [recoveryCheckAccountId, setRecoveryCheckAccountId] = useState('');
-  const [pendingMove, setPendingMove] = useState<{ member: MemberAccount; destination: MoveDestination } | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
@@ -37,11 +35,11 @@ export const OuAutomationPanel = forwardRef<OuAutomationHandle, { onNotice: (mes
     const close = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       if (historyOpen) setHistoryOpen(false);
-      else if (!pendingMove) setOpen(false);
+      else setOpen(false);
     };
     window.addEventListener('keydown', close);
     return () => window.removeEventListener('keydown', close);
-  }, [open, pendingMove, historyOpen]);
+  }, [open, historyOpen]);
 
   async function request(body: Record<string, unknown>) {
     const response = await fetch('/api/ou-automation', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -121,18 +119,6 @@ export const OuAutomationPanel = forwardRef<OuAutomationHandle, { onNotice: (mes
     finally { setBusy(false); }
   }
 
-  async function confirmMove() {
-    if (!pendingMove || !selectedAccountId) return;
-    setBusy(true);
-    try {
-      await request({ action: 'move-member', accountId: selectedAccountId, memberAccountId: pendingMove.member.accountId, destination: pendingMove.destination });
-      setPendingMove(null);
-      await inspect(selectedAccountId);
-      onNotice('成员账号 OU 已更新');
-    } catch (error) { onNotice(error instanceof Error ? error.message : '移动成员账号失败'); }
-    finally { setBusy(false); }
-  }
-
   async function openHistory() {
     if (!selectedAccountId) return;
     setHistoryOpen(true);
@@ -170,10 +156,9 @@ export const OuAutomationPanel = forwardRef<OuAutomationHandle, { onNotice: (mes
             <div className={styles.memberHead}><div><h3>成员账号</h3><span>{members.length}</span></div><input value={memberQuery} onChange={(event) => setMemberQuery(event.target.value)} placeholder="搜索名称、邮箱或账号 ID" /></div>
             <div className={styles.tabs}>{(['temporary', 'all', 'restricted'] as const).map((value) => <button key={value} className={memberFilter === value ? styles.selectedTab : ''} onClick={() => setMemberFilter(value)}>{placementLabel(value)}</button>)}</div>
             <MfaRecoveryPanel payerAccountId={discovery.account.accountId} member={selectedMember} disabled={busy || previewMode} autoCheck={recoveryCheckAccountId === discovery.account.accountId} onAutoCheckComplete={() => setRecoveryCheckAccountId('')} onNotice={onNotice} />
-            <div className={styles.memberList}>{visibleMembers.length === 0 ? <p>没有匹配的成员账号</p> : visibleMembers.map((member) => <div className={styles.memberRow} key={member.accountId}><div><label style={{ display: 'flex', alignItems: 'center', gap: 8 }}><input aria-label={`选择 ${member.name}`} type="checkbox" checked={selectedMemberId === member.accountId} onChange={() => setSelectedMemberId((current) => current === member.accountId ? '' : member.accountId)} /><strong>{member.name}</strong></label><small>{member.email}</small></div><code>{member.accountId}</code><select value={member.placement === 'restricted' || member.placement === 'temporary' ? member.placement : 'current'} disabled={busy || previewMode || !discovery.temporaryOuId || !discovery.restrictedOuId} onChange={(event) => setPendingMove({ member, destination: event.target.value as MoveDestination })}><option value="current" disabled>{member.parentName || '其他 OU'}</option><option value="restricted">禁止 SP/RI</option><option value="temporary">临时</option></select></div>)}</div>
+            <div className={styles.memberList}>{visibleMembers.length === 0 ? <p>没有匹配的成员账号</p> : visibleMembers.map((member) => <div className={styles.memberRow} key={member.accountId}><div><label style={{ display: 'flex', alignItems: 'center', gap: 8 }}><input aria-label={`选择 ${member.name}`} type="checkbox" checked={selectedMemberId === member.accountId} onChange={() => setSelectedMemberId((current) => current === member.accountId ? '' : member.accountId)} /><strong>{member.name}</strong></label><small>{member.email}</small></div><code>{member.accountId}</code></div>)}</div>
           </>}</section>
         </div>
-        {pendingMove && <div className={styles.confirmLayer}><div className={styles.confirmBox}><span>成员账号</span><h3>{pendingMove.member.name}</h3><p>移动到“{placementLabel(pendingMove.destination)}”？移到临时后，次日 02:00 会自动归位。</p><div><button onClick={() => setPendingMove(null)}>取消</button><button className={styles.primary} disabled={busy} onClick={() => void confirmMove()}>确认移动</button></div></div></div>}
         {historyOpen && <div className={styles.confirmLayer}><section className={styles.historyBox}><header><div><span>OPERATION LOG</span><h3>{discovery?.account.remark} · 操作记录</h3></div><button onClick={() => setHistoryOpen(false)}>×</button></header><div className={styles.historyBody}>{historyLoading ? <p>正在读取...</p> : historyEntries.length === 0 ? <p>暂无操作记录</p> : Object.entries(historyGroups).map(([date, entries]) => <section key={date}><h4>{date}</h4>{entries.map((entry) => <article key={`${entry.occurredAt}-${entry.mode}`}><div className={styles.historySummary}><time>{formatHistoryTime(entry.occurredAt)}</time><i data-mode={entry.mode}>{entry.mode === 'automatic' ? '自动任务' : '手动操作'}</i><b data-status={entry.status}>{entry.status === 'success' ? '成功' : '失败'}</b><p>检查 {entry.checked} · 移动 {entry.moved} · 跳过 {entry.skipped}</p></div>{entry.status === 'failed' && <em>{entry.message}</em>}{entry.movedAccounts.length > 0 && <div className={styles.movedAccounts}>{entry.movedAccounts.map((member) => <div key={`${entry.occurredAt}-${member.accountId}`}><span><strong>{member.name}</strong><small>{member.accountId}</small></span><p>{member.sourceParentName}<b>→</b>{member.destinationParentName}</p></div>)}</div>}</article>)}</section>)}</div></section></div>}
       </section>
     </div>}
