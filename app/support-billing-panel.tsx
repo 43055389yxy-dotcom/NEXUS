@@ -19,7 +19,7 @@ type PayerFilter = 'all' | 'attention' | PayerState;
 const statusText: Record<Status, string> = {
   normal: '金额一致', create: '待创建', update: '待更新', native_visible: '原生可见', query_error: '处理失败', zero_risk: '疑似清零', mapping_error: '映射异常', mapping_ignored: '已通过', duplicate_cli: '重复账单', period_range_error: '周期待修正', manual_deleted: '已人工删除',
 };
-const safeToSync = (status: Status) => ['create', 'update', 'period_range_error'].includes(status);
+const safeToSync = (status: Status) => ['create', 'update', 'query_error', 'period_range_error'].includes(status);
 const risky = (status: Status) => ['query_error', 'zero_risk', 'mapping_error', 'duplicate_cli', 'period_range_error'].includes(status);
 const hasSupportCharge = (item: BillingPeriod) => (item.aws ?? 0) !== 0 || (item.synced ?? 0) !== 0;
 const money = (value: number | null | undefined) => value === null || value === undefined ? '—' : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);

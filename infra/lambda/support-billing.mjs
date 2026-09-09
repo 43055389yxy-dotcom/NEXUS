@@ -518,13 +518,39 @@ async function writeSync(payer, clients, snapshot, periodKey, targets, automatic
         const response = await clients.conductor.send(new CreateCustomLineItemCommand({ ClientToken: `nexus-support-${payer.accountId}-${account.id}-${period.replace("-", "")}`, Name: name, Description: description, BillingGroupArn: item.billingGroupArn, BillingPeriodRange: billingRange(period), ChargeDetails: { Flat: { ChargeValue: amount }, Type: "FEE" }, AccountId: account.id, ComputationRule: "CONSOLIDATED" }));
         item.customLineItemArn = response.Arn; summary.created += 1;
       } else {
-        await clients.conductor.send(new UpdateCustomLineItemCommand({
-          Arn: item.customLineItemArn,
-          Name: name,
-          Description: description,
-          ChargeDetails: { Flat: { ChargeValue: amount } },
-          ...(periodKey === "previous" ? { BillingPeriodRange: { InclusiveStartBillingPeriod: period } } : {}),
-        }));
+        try {
+          await clients.conductor.send(new UpdateCustomLineItemCommand({
+            Arn: item.customLineItemArn,
+            Name: name,
+            Description: description,
+            ChargeDetails: { Flat: { ChargeValue: amount } },
+            ...(periodKey === "previous" ? { BillingPeriodRange: { InclusiveStartBillingPeriod: period } } : {}),
+          }));
+        } catch (error) {
+          if (!/invalid custom line item billing period range/i.test(String(error?.message || error))) throw error;
+          const staleArn = item.customLineItemArn;
+          const versions = await listVersions(clients.conductor, staleArn);
+          const valid = versions.some((version) => version.AccountId === account.id && version.Name === name && version.StartBillingPeriod === period);
+          if (!valid) throw new Error("账单项安全校验未通过，未执行重建");
+          await clients.conductor.send(new DeleteCustomLineItemCommand({
+            Arn: staleArn,
+            ...(periodKey === "previous" ? { BillingPeriodRange: { InclusiveStartBillingPeriod: period } } : {}),
+          }));
+          const unresolved = await waitForRemovedCarryovers(clients.conductor, [{ arn: staleArn, activePeriod: period }]);
+          if (unresolved.has(staleArn)) throw new Error("AWS 已接收删除，但异常账单项暂未移除");
+          const response = await clients.conductor.send(new CreateCustomLineItemCommand({
+            ClientToken: `nexus-repair-${payer.accountId}-${account.id}-${period.replace("-", "")}-${staleArn.split("/").pop()}`.slice(0, 64),
+            Name: name,
+            Description: description,
+            BillingGroupArn: item.billingGroupArn,
+            BillingPeriodRange: billingRange(period),
+            ChargeDetails: { Flat: { ChargeValue: amount }, Type: "FEE" },
+            AccountId: account.id,
+            ComputationRule: "CONSOLIDATED",
+          }));
+          item.customLineItemArn = response.Arn;
+          summary.repaired += 1;
+        }
         summary.updated += 1;
       }
       summary.syncedAmount = cents(summary.syncedAmount + amount);
