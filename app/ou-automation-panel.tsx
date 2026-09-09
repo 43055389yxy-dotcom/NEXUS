@@ -23,7 +23,6 @@ export const OuAutomationPanel = forwardRef<OuAutomationHandle, { onNotice: (mes
   const [members, setMembers] = useState<MemberAccount[]>([]);
   const [memberQuery, setMemberQuery] = useState('');
   const [memberFilter, setMemberFilter] = useState<'all' | MemberAccount['placement']>('all');
-  const [selectedMemberId, setSelectedMemberId] = useState('');
   const [recoveryCheckAccountId, setRecoveryCheckAccountId] = useState('');
   const [mappingOpen, setMappingOpen] = useState(false);
   const [temporarySelection, setTemporarySelection] = useState('');
@@ -69,7 +68,6 @@ export const OuAutomationPanel = forwardRef<OuAutomationHandle, { onNotice: (mes
     setSelectedAccountId(accountId);
     setDiscovery(null);
     setMembers([]);
-    setSelectedMemberId('');
     const payload = await request({ action: 'discover', accountId }) as { discovery?: Discovery; members?: MemberAccount[] };
     if (!payload.discovery) throw new Error('未返回 Organization 信息');
     setDiscovery(payload.discovery);
@@ -129,7 +127,7 @@ export const OuAutomationPanel = forwardRef<OuAutomationHandle, { onNotice: (mes
   async function initializeAccount(accountId: string) {
     setOpen(true);
     setBusy(true);
-    try { await loadAccounts(accountId); setMembers([]); setSelectedMemberId(''); await openMapping(accountId); }
+    try { await loadAccounts(accountId); setMembers([]); await openMapping(accountId); }
     catch (error) { onNotice(error instanceof Error ? error.message : '账号已保存，但 OU 扫描失败'); }
     finally { setBusy(false); }
   }
@@ -164,7 +162,6 @@ export const OuAutomationPanel = forwardRef<OuAutomationHandle, { onNotice: (mes
   const visibleAccounts = accounts.filter((account) => !accountNeedle || [account.remark, account.accountId, account.groupName].some((value) => value.toLocaleLowerCase('zh-CN').includes(accountNeedle)));
   const memberNeedle = memberQuery.trim().toLocaleLowerCase('zh-CN');
   const visibleMembers = members.filter((member) => (memberFilter === 'all' || member.placement === memberFilter) && (!memberNeedle || [member.name, member.email, member.accountId].some((value) => value.toLocaleLowerCase('zh-CN').includes(memberNeedle))));
-  const selectedMember = members.find((member) => member.accountId === selectedMemberId) ?? null;
   const mappingOus = discovery?.ous ?? [];
   const canSaveMapping = mappingSelectionValid(temporarySelection, restrictedSelection);
   const historyGroups = historyEntries.reduce<Record<string, HistoryEntry[]>>((groups, entry) => {
@@ -183,12 +180,12 @@ export const OuAutomationPanel = forwardRef<OuAutomationHandle, { onNotice: (mes
         <div className={styles.layout}>
           <aside className={styles.accounts}>{accounts.length === 0 ? <p>暂无代付账号</p> : visibleAccounts.length === 0 ? <p>没有匹配账号</p> : visibleAccounts.map((account) => <button key={account.accountId} className={selectedAccountId === account.accountId ? styles.active : ''} onClick={() => { setBusy(true); void inspect(account.accountId).catch((error) => onNotice(error.message)).finally(() => setBusy(false)); }}><span>{account.remark.slice(0, 1).toUpperCase()}</span><div><strong>{account.remark}</strong><small>{account.accountId} · {account.groupName}</small></div>{account.configured && <i className={styles.ready}>已就绪</i>}</button>)}</aside>
           <section className={styles.config}>{busy && !discovery ? <div className={styles.empty}>正在读取...</div> : !discovery ? <div className={styles.empty}>选择一个代付账号</div> : <>
-            <div className={styles.accountHead}><div><strong>{discovery.account.remark}</strong><small>{discovery.account.accountId}</small></div><aside className={styles.accountActions}><button disabled={busy || previewMode} onClick={() => void openHistory()}>操作记录</button><button disabled={busy || previewMode || !discovery.restrictedOuId} onClick={() => void run(discovery.account.accountId)}>立即归位</button></aside></div>
+            <div className={styles.accountHead}><div><strong>{discovery.account.remark}</strong><small>{discovery.account.accountId}</small></div><aside className={styles.accountActions}><button disabled={busy || previewMode} onClick={() => void openHistory()}>操作记录</button><button disabled={busy || previewMode || !discovery.restrictedOuId} onClick={() => void run(discovery.account.accountId)}>立即全部归位</button></aside></div>
             <div className={styles.ouSummary}><div><span>临时</span><strong>{discovery.temporaryOu?.name ?? '未配置'}</strong></div><div><span>禁止 SP/RI</span><strong>{discovery.restrictedOu?.name ?? '未配置'}</strong></div><button disabled={busy || previewMode} onClick={() => void beginMapping(discovery.account.accountId)}>{discovery.account.configured ? '修改映射' : '选择映射'}</button></div>
             <div className={styles.memberHead}><div><h3>成员账号</h3><span>{members.length}</span></div><input value={memberQuery} onChange={(event) => setMemberQuery(event.target.value)} placeholder="搜索名称、邮箱或账号 ID" /></div>
             <div className={styles.tabs}>{(['temporary', 'all', 'restricted'] as const).map((value) => <button key={value} className={memberFilter === value ? styles.selectedTab : ''} onClick={() => setMemberFilter(value)}>{placementLabel(value)}</button>)}</div>
-            <MfaRecoveryPanel payerAccountId={discovery.account.accountId} member={selectedMember} disabled={busy || previewMode} autoCheck={recoveryCheckAccountId === discovery.account.accountId} onAutoCheckComplete={() => setRecoveryCheckAccountId('')} onNotice={onNotice} />
-            <div className={styles.memberList}>{visibleMembers.length === 0 ? <p>没有匹配的成员账号</p> : visibleMembers.map((member) => <div className={styles.memberRow} key={member.accountId}><div><label style={{ display: 'flex', alignItems: 'center', gap: 8 }}><input aria-label={`选择 ${member.name}`} type="checkbox" checked={selectedMemberId === member.accountId} onChange={() => setSelectedMemberId((current) => current === member.accountId ? '' : member.accountId)} /><strong>{member.name}</strong></label><small>{member.email}</small></div><code>{member.accountId}</code></div>)}</div>
+            <MfaRecoveryPanel payerAccountId={discovery.account.accountId} autoCheck={recoveryCheckAccountId === discovery.account.accountId} onAutoCheckComplete={() => setRecoveryCheckAccountId('')} onNotice={onNotice} />
+            <div className={styles.memberList}>{visibleMembers.length === 0 ? <p>没有匹配的成员账号</p> : visibleMembers.map((member) => <div className={styles.memberRow} key={member.accountId}><div><strong>{member.name}</strong><small>{member.email}</small></div><code>{member.accountId}</code></div>)}</div>
           </>}</section>
         </div>
         {mappingOpen && discovery && <div className={styles.confirmLayer}><section className={`${styles.confirmBox} ${styles.mappingBox}`}><span>OU MAPPING</span><h3>选择 OU 映射</h3><p>这里只保存映射，不会移动任何成员账号。同名 OU 请根据路径和 ID 选择。</p><section className={styles.mappingFields}><label><span>临时 OU</span><select value={temporarySelection} onChange={(event) => setTemporarySelection(event.target.value)}><option value="" disabled>请选择临时 OU</option>{mappingOus.map((ou) => <option key={`temporary-${ou.id}`} value={ou.id}>{ouOptionLabel(ou)}</option>)}{!hasNamedOu(mappingOus, '临时') && <option value="__create__">不存在，创建“临时”</option>}</select></label><label><span>禁止 SP/RI OU</span><select value={restrictedSelection} onChange={(event) => setRestrictedSelection(event.target.value)}><option value="" disabled>请选择禁止 OU</option>{mappingOus.map((ou) => <option key={`restricted-${ou.id}`} value={ou.id}>{ouOptionLabel(ou)}</option>)}{!hasNamedOu(mappingOus, '禁止 SP/RI') && <option value="__create__">不存在，创建“禁止 SP/RI”</option>}</select></label>{temporarySelection && restrictedSelection && !canSaveMapping && <em>临时和禁止 SP/RI 不能选择同一个 OU</em>}</section><div><button disabled={busy} onClick={() => setMappingOpen(false)}>取消</button><button className={styles.primary} disabled={busy || !canSaveMapping} onClick={() => void saveMapping()}>{busy ? '保存中...' : '确认映射'}</button></div></section></div>}

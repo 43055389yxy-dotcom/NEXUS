@@ -202,7 +202,6 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
       if (!response.ok || !payload.account) throw new Error(payload.error ?? '保存失败');
       setAccounts((current) => [...current, toManagedAccount(payload.account as AccountRecord)]);
       setShowAdd(false);
-      setBillingGuideAccount({ id: accountId, name: remark });
       setNewAccount({ remark: '', accountId: '', region: 'us-east-1', groupId: selectedGroup !== 'ungrouped' ? selectedGroup : '', accountType: '' });
       if (selectedGroupName === '老代付组' || (selectedGroupName === 'PMA' && newAccount.accountType === 'cma')) await ouAutomationRef.current?.initializeAccount(accountId);
       else setNotice(`${remark} 已添加`);
