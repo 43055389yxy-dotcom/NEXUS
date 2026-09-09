@@ -460,10 +460,12 @@ async function repairRanges(clients, snapshot, periodKey, targets) {
           item.suggestion = "周期修正失败：账单项版本校验未通过";
           continue;
         }
-        await clients.conductor.send(new DeleteCustomLineItemCommand({
-          Arn: managed.arn,
-          BillingPeriodRange: billingRange(managed.activePeriod),
-        }));
+      await clients.conductor.send(new DeleteCustomLineItemCommand({
+        Arn: managed.arn,
+        BillingPeriodRange: {
+          InclusiveStartBillingPeriod: managed.activePeriod,
+        },
+      }));
         requested.push({ arn: managed.arn, accountId: account.id, activePeriod: managed.activePeriod, item });
       } catch (error) {
         failed += 1;
