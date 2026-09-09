@@ -518,7 +518,13 @@ async function writeSync(payer, clients, snapshot, periodKey, targets, automatic
         const response = await clients.conductor.send(new CreateCustomLineItemCommand({ ClientToken: `nexus-support-${payer.accountId}-${account.id}-${period.replace("-", "")}`, Name: name, Description: description, BillingGroupArn: item.billingGroupArn, BillingPeriodRange: billingRange(period), ChargeDetails: { Flat: { ChargeValue: amount }, Type: "FEE" }, AccountId: account.id, ComputationRule: "CONSOLIDATED" }));
         item.customLineItemArn = response.Arn; summary.created += 1;
       } else {
-        await clients.conductor.send(new UpdateCustomLineItemCommand({ Arn: item.customLineItemArn, Name: name, Description: description, ChargeDetails: { Flat: { ChargeValue: amount } }, BillingPeriodRange: billingRange(period) }));
+        await clients.conductor.send(new UpdateCustomLineItemCommand({
+          Arn: item.customLineItemArn,
+          Name: name,
+          Description: description,
+          ChargeDetails: { Flat: { ChargeValue: amount } },
+          ...(periodKey === "previous" ? { BillingPeriodRange: { InclusiveStartBillingPeriod: period } } : {}),
+        }));
         summary.updated += 1;
       }
       summary.syncedAmount = cents(summary.syncedAmount + amount);
@@ -622,7 +628,10 @@ async function deleteAction(payer, periodKey, targets, persist = saveSnapshot) {
     const item = account[periodKey]; const expected = `${prefix}${account.id}_${period.replace("-", "")}`;
     if (!item.customLineItemArn || item.customLineItemName !== expected) { summary.skipped += 1; continue; }
     try {
-      await clients.conductor.send(new DeleteCustomLineItemCommand({ Arn: item.customLineItemArn, BillingPeriodRange: billingRange(period) }));
+      await clients.conductor.send(new DeleteCustomLineItemCommand({
+        Arn: item.customLineItemArn,
+        ...(periodKey === "previous" ? { BillingPeriodRange: { InclusiveStartBillingPeriod: period } } : {}),
+      }));
       requested.push({ arn: item.customLineItemArn, activePeriod: period, account, item });
     } catch (error) { summary.failed += 1; item.status = "query_error"; item.suggestion = `删除失败：${error?.message || error}`; }
   }
