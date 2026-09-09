@@ -3,9 +3,11 @@
 import { useEffect, useRef } from 'react';
 import styles from './billing-access-guide.module.css';
 
-export function BillingAccessGuide({ account, onClose }: {
+export function BillingAccessGuide({ account, busy, onClose, onComplete }: {
   account: { id: string; name: string };
+  busy: boolean;
   onClose: () => void;
+  onComplete: () => void;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -35,7 +37,7 @@ export function BillingAccessGuide({ account, onClose }: {
 
     <div className={styles.account}>
       <div><strong>{account.name}</strong><code>{account.id}</code></div>
-      <span>需要 root 用户</span>
+      <span>待开启</span>
     </div>
 
     <ol className={styles.steps}>
@@ -45,7 +47,7 @@ export function BillingAccessGuide({ account, onClose }: {
 
     <footer className={styles.footer}>
       <small>请确认当前 AWS 账号 ID 是 {account.id}。</small>
-      <div><button type="button" className={styles.primary} onClick={onClose}>关闭</button></div>
+      <div><button type="button" disabled={busy} onClick={onClose}>稍后处理</button><button type="button" className={styles.primary} disabled={busy} onClick={onComplete}>{busy ? '记录中...' : '已完成'}</button></div>
     </footer>
   </dialog>;
 }

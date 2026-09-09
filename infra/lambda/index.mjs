@@ -87,7 +87,7 @@ async function ensureGroup(groupId) {
 async function listAccounts(identity) {
   const result = await dynamodb.send(new ScanCommand({
     TableName: accountsTable,
-    ProjectionExpression: "accountId, #name, remark, #region, groupId, accountType, createdAt, updatedAt",
+    ProjectionExpression: "accountId, #name, remark, #region, groupId, accountType, billingAccessConfirmedAt, billingAccessReminderRequired, createdAt, updatedAt",
     ExpressionAttributeNames: { "#name": "name", "#region": "region" },
   }));
   const access = await allowedGroupIds(identity);
@@ -97,6 +97,8 @@ async function listAccounts(identity) {
     region: item.region.S,
     groupId: item.groupId?.S || "",
     accountType: item.accountType?.S || "",
+    billingAccessConfirmedAt: item.billingAccessConfirmedAt?.S || "",
+    billingAccessReminderRequired: item.billingAccessReminderRequired?.BOOL === true,
     createdAt: item.createdAt?.S,
     updatedAt: item.updatedAt?.S,
   })).filter((account) => !access || access.has(account.groupId || UNGROUPED))
@@ -111,11 +113,11 @@ async function saveAccount(body) {
     TableName: accountsTable,
     Item: {
       accountId: { S: account.accountId }, name: { S: account.remark }, remark: { S: account.remark }, region: { S: account.region },
-      groupId: { S: account.groupId }, ...(account.accountType ? { accountType: { S: account.accountType } } : {}), createdAt: { S: now }, updatedAt: { S: now },
+      groupId: { S: account.groupId }, ...(account.accountType ? { accountType: { S: account.accountType } } : {}), billingAccessReminderRequired: { BOOL: true }, createdAt: { S: now }, updatedAt: { S: now },
     },
     ConditionExpression: "attribute_not_exists(accountId)",
   }));
-  return account;
+  return { ...account, billingAccessConfirmedAt: "", billingAccessReminderRequired: true };
 }
 
 async function updateAccount(body) {
@@ -123,6 +125,22 @@ async function updateAccount(body) {
   if (!/^\d{12}$/.test(accountId)) throw new Error("Invalid AWS account ID");
   const current = await dynamodb.send(new GetItemCommand({ TableName: accountsTable, Key: { accountId: { S: accountId } }, ConsistentRead: true }));
   if (!current.Item) throw new Error("Account does not exist");
+  if (body.billingAccessConfirmed === true) {
+    const confirmedAt = new Date().toISOString();
+    const result = await dynamodb.send(new UpdateItemCommand({
+      TableName: accountsTable,
+      Key: { accountId: { S: accountId } },
+      UpdateExpression: "SET billingAccessConfirmedAt = :confirmedAt, billingAccessReminderRequired = :reminder, updatedAt = :updatedAt",
+      ConditionExpression: "attribute_exists(accountId)",
+      ExpressionAttributeValues: { ":confirmedAt": { S: confirmedAt }, ":reminder": { BOOL: false }, ":updatedAt": { S: confirmedAt } },
+      ReturnValues: "ALL_NEW",
+    }));
+    return {
+      accountId: result.Attributes.accountId.S, remark: result.Attributes.remark?.S || result.Attributes.name?.S || accountId,
+      region: result.Attributes.region?.S || "us-east-1", groupId: result.Attributes.groupId?.S || "", accountType: result.Attributes.accountType?.S || "",
+      billingAccessConfirmedAt: result.Attributes.billingAccessConfirmedAt?.S || confirmedAt, billingAccessReminderRequired: false,
+    };
+  }
   const remark = String(body.remark ?? current.Item.remark?.S ?? current.Item.name?.S ?? "").trim();
   const region = String(body.region ?? current.Item.region?.S ?? "us-east-1").trim();
   const groupId = String(body.groupId ?? current.Item.groupId?.S ?? "").trim();
@@ -142,6 +160,7 @@ async function updateAccount(body) {
   return {
     accountId: result.Attributes.accountId.S, remark: result.Attributes.remark.S,
     region: result.Attributes.region.S, groupId: result.Attributes.groupId?.S || "", accountType: result.Attributes.accountType?.S || "",
+    billingAccessConfirmedAt: result.Attributes.billingAccessConfirmedAt?.S || "", billingAccessReminderRequired: result.Attributes.billingAccessReminderRequired?.BOOL === true,
   };
 }
 

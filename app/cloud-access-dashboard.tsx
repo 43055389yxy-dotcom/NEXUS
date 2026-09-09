@@ -11,9 +11,9 @@ import { SUPPORT_BILLING_PROVISION_FRAGMENT } from './support-billing-provision'
 import { BillingAccessGuide } from './billing-access-guide';
 
 type AccountType = 'pma' | 'cma' | '';
-type AccountRecord = { accountId: string; remark?: string; name?: string; region: string; groupId?: string; accountType?: AccountType };
+type AccountRecord = { accountId: string; remark?: string; name?: string; region: string; groupId?: string; accountType?: AccountType; billingAccessConfirmedAt?: string; billingAccessReminderRequired?: boolean };
 type GroupRecord = { groupId: string; name: string };
-type ManagedAccount = CloudAccount & { groupId: string; accountType: AccountType };
+type ManagedAccount = CloudAccount & { groupId: string; accountType: AccountType; billingAccessConfirmedAt: string; billingAccessReminderRequired: boolean };
 type NewAccount = { remark: string; accountId: string; region: string; groupId: string; accountType: AccountType };
 type PermissionUser = { userId: string; userName: string; role: string; groupIds: string[]; configured?: boolean };
 const OPS_ACCOUNT_ID = '590184009438';
@@ -57,6 +57,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
   const [pmaAccountType, setPmaAccountType] = useState<'pma' | 'cma'>('cma');
   const searchRef = useRef<HTMLInputElement>(null);
   const ouAutomationRef = useRef<OuAutomationHandle>(null);
+  const promptedBillingAccess = useRef(new Set<string>());
 
   async function loadData() {
     setLoading(true);
@@ -83,6 +84,14 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
     const frame = window.requestAnimationFrame(() => void loadData());
     return () => window.cancelAnimationFrame(frame);
   }, []);
+
+  useEffect(() => {
+    if (loading || billingGuideAccount) return;
+    const account = accounts.find((item) => item.billingAccessReminderRequired && !promptedBillingAccess.current.has(item.id));
+    if (!account) return;
+    promptedBillingAccess.current.add(account.id);
+    setBillingGuideAccount({ id: account.id, name: account.name });
+  }, [accounts, billingGuideAccount, loading]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -200,8 +209,11 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
       const response = await fetch('/api/accounts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...newAccount, remark, accountId }) });
       const payload = await response.json() as { account?: AccountRecord; error?: string };
       if (!response.ok || !payload.account) throw new Error(payload.error ?? '保存失败');
-      setAccounts((current) => [...current, toManagedAccount(payload.account as AccountRecord)]);
+      const addedAccount = toManagedAccount(payload.account as AccountRecord);
+      setAccounts((current) => [...current, addedAccount]);
       setShowAdd(false);
+      promptedBillingAccess.current.add(accountId);
+      setBillingGuideAccount({ id: accountId, name: remark });
       setNewAccount({ remark: '', accountId: '', region: 'us-east-1', groupId: selectedGroup !== 'ungrouped' ? selectedGroup : '', accountType: '' });
       if (selectedGroupName === '老代付组' || (selectedGroupName === 'PMA' && newAccount.accountType === 'cma')) await ouAutomationRef.current?.initializeAccount(accountId);
       else setNotice(`${remark} 已添加`);
@@ -222,6 +234,20 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
       setAccounts(previous);
       setNotice(error instanceof Error ? error.message : '移动失败');
     }
+  }
+
+  async function confirmBillingAccess(accountId: string) {
+    setSaving(true);
+    try {
+      const response = await fetch('/api/accounts', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accountId, billingAccessConfirmed: true }) });
+      const payload = await response.json() as { account?: AccountRecord; error?: string };
+      if (!response.ok || !payload.account) throw new Error(payload.error ?? '记录失败');
+      const updated = toManagedAccount(payload.account);
+      setAccounts((current) => current.map((account) => account.id === updated.id ? updated : account));
+      setBillingGuideAccount(null);
+      setNotice('账单访问已记录');
+    } catch (error) { setNotice(error instanceof Error ? error.message : '记录失败'); }
+    finally { setSaving(false); }
   }
 
   function openEdit(account: ManagedAccount) {
@@ -388,14 +414,14 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
         </div>
       )}
 
-      {isAdmin && billingGuideAccount && <BillingAccessGuide key={billingGuideAccount.id} account={billingGuideAccount} onClose={() => setBillingGuideAccount(null)} />}
+      {isAdmin && billingGuideAccount && <BillingAccessGuide key={billingGuideAccount.id} account={billingGuideAccount} busy={saving} onClose={() => setBillingGuideAccount(null)} onComplete={() => void confirmBillingAccess(billingGuideAccount.id)} />}
       {connecting && <div className="connection-layer" role="status"><section className="connection-box"><div className="aws-spinner"><span>aws</span><i /><i /></div><h2>正在打开</h2><p>{connecting.name}</p><div className="progress-line"><i /></div></section></div>}
       {notice && <div className="notice"><span>✓</span>{notice}</div>}
     </main>
   );
 }
 
-function toManagedAccount(account: AccountRecord): ManagedAccount { const remark = account.remark ?? account.name ?? account.accountId; const accountType: AccountType = account.accountType === 'pma' ? 'pma' : account.accountType === 'cma' ? 'cma' : ''; return { id:account.accountId,name:remark,organization:remark,region:account.region,groupId:account.groupId ?? '',accountType,roleName:'TontianOperationsRole',access:'admin',environment:'production',favorite:false,lastUsed:'' }; }
+function toManagedAccount(account: AccountRecord): ManagedAccount { const remark = account.remark ?? account.name ?? account.accountId; const accountType: AccountType = account.accountType === 'pma' ? 'pma' : account.accountType === 'cma' ? 'cma' : ''; return { id:account.accountId,name:remark,organization:remark,region:account.region,groupId:account.groupId ?? '',accountType,billingAccessConfirmedAt:account.billingAccessConfirmedAt ?? '',billingAccessReminderRequired:account.billingAccessReminderRequired === true,roleName:'TontianOperationsRole',access:'admin',environment:'production',favorite:false,lastUsed:'' }; }
 function formatAccountId(accountId:string){return accountId.replace(/(\d{4})(?=\d)/g,'$1 ')}
 function isTypingTarget(target:EventTarget|null){return target instanceof HTMLInputElement||target instanceof HTMLTextAreaElement||target instanceof HTMLSelectElement}
 function buildProvisionCommand(accountType: AccountType){const organizationGuard=accountType==='pma'?'':`

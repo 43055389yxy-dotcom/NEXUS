@@ -456,39 +456,38 @@ async function repairRanges(clients, snapshot, periodKey, targets) {
         const valid = versions.some((version) => version.AccountId === account.id && version.Name === expectedName && version.StartBillingPeriod === managed.originalPeriod && (!version.EndBillingPeriod || version.EndBillingPeriod > managed.activePeriod));
         if (!valid) {
           failed += 1;
-          item.status = "query_error";
+          item.status = "period_range_error";
           item.suggestion = "周期修正失败：账单项版本校验未通过";
           continue;
         }
-        await clients.conductor.send(new UpdateCustomLineItemCommand({
+        await clients.conductor.send(new DeleteCustomLineItemCommand({
           Arn: managed.arn,
-          ChargeDetails: { Flat: { ChargeValue: 0 } },
           BillingPeriodRange: billingRange(managed.activePeriod),
         }));
         requested.push({ arn: managed.arn, accountId: account.id, activePeriod: managed.activePeriod, item });
       } catch (error) {
         failed += 1;
-        item.status = "query_error";
+        item.status = "period_range_error";
         item.suggestion = `周期修正失败：${String(error?.message || error).slice(0, 180)}`;
       }
     }
   }
   if (!requested.length) return { repaired: 0, failed };
-  const unresolved = await waitForNeutralizedCarryovers(clients.conductor, requested);
+  const unresolved = await waitForRemovedCarryovers(clients.conductor, requested);
   for (const repair of requested) {
     if (!unresolved.has(repair.arn)) continue;
     failed += 1;
-    repair.item.status = "query_error";
-    repair.item.suggestion = "周期修正失败：AWS 返回成功，但旧费用仍未归零";
+    repair.item.status = "period_range_error";
+    repair.item.suggestion = "周期修正待确认：AWS 已接收删除，但旧费用暂未移除";
   }
   return { repaired: requested.length - unresolved.size, failed };
 }
 
-async function waitForNeutralizedCarryovers(client, repairs) {
+async function waitForRemovedCarryovers(client, repairs) {
   let unresolved = new Set(repairs.map((item) => item.arn));
   const periods = [...new Set(repairs.map((item) => item.activePeriod))];
-  for (let attempt = 0; attempt < 4 && unresolved.size; attempt += 1) {
-    if (attempt) await new Promise((resolve) => setTimeout(resolve, 700 * (2 ** (attempt - 1))));
+  for (let attempt = 0; attempt < 5 && unresolved.size; attempt += 1) {
+    if (attempt) await new Promise((resolve) => setTimeout(resolve, 1000 * (2 ** (attempt - 1))));
     try {
       const items = (await Promise.all(periods.map((period) => listCustomLineItems(client, period)))).flat();
       const byArn = new Map(items.map((item) => [item.Arn, item]));
