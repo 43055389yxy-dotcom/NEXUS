@@ -141,6 +141,7 @@ export const OuAutomationPanel = forwardRef<OuAutomationHandle, { onNotice: (mes
     try {
       const payload = await request(accountId ? { action: 'run', accountId } : { action: 'run-all' }) as { result?: { message?: string }; results?: unknown[] };
       onNotice(payload.result?.message ?? `已处理 ${payload.results?.length ?? 0} 个 Organization`);
+      if (accountId) setMemberFilter('restricted');
       await loadAccounts(accountId || selectedAccountId);
       if (accountId || selectedAccountId) await inspect(accountId || selectedAccountId);
     } catch (error) { onNotice(error instanceof Error ? error.message : '归位失败'); }

@@ -260,7 +260,7 @@ async function discoverAccount(accountId) {
 
 async function recordRun(accountId, status, message) { await dynamodb.send(new UpdateItemCommand({ TableName: accountsTable, Key: { accountId: { S: accountId } }, UpdateExpression: "SET ouAutomationLastRunAt=:runAt, ouAutomationLastStatus=:status, ouAutomationLastMessage=:message", ExpressionAttributeValues: { ":runAt": { S: new Date().toISOString() }, ":status": { S: status }, ":message": { S: String(message || "").slice(0, 500) } } })); }
 
-async function reconcile(accountId) {
+async function reconcile(accountId, { allMembers = false, mode = "automatic" } = {}) {
   const account = await requireAccount(accountId);
   if (!account.temporaryOuId || !account.restrictedOuId) fail("请先完成 OU 自动初始化");
   let checked = 0;
@@ -269,29 +269,41 @@ async function reconcile(accountId) {
   const movedAccounts = [];
   try {
     const organization = await context(account);
-    const members = (await accountsForParent(organization.client, account.temporaryOuId)).filter((member) => member.Id && member.Status !== "SUSPENDED" && member.State !== "SUSPENDED");
-    const movementContext = { ...organization, account, temporaryOuId: account.temporaryOuId, restrictedOuId: account.restrictedOuId, ous: [] };
-    checked = members.length;
-    for (const member of members) {
-      await organization.client.send(new MoveAccountCommand({ AccountId: member.Id, SourceParentId: account.temporaryOuId, DestinationParentId: account.restrictedOuId }));
-      movedAccounts.push({ accountId: member.Id, name: member.Name || member.Id, email: member.Email || "", sourceParentName: temporaryName, destinationParentName: restrictedName });
+    const ous = allMembers ? await rootOus(organization.client, organization.rootId) : [];
+    const parents = allMembers
+      ? [{ id: organization.rootId, name: "未分组" }, ...ous.map((ou) => ({ id: ou.id, name: ou.path || ou.name }))]
+      : [{ id: account.temporaryOuId, name: temporaryName }];
+    const candidates = [];
+    for (const parent of parents) {
+      const members = await accountsForParent(organization.client, parent.id);
+      for (const member of members) {
+        if (!member.Id || member.Id === organization.managementAccountId || member.Status === "SUSPENDED" || member.State === "SUSPENDED") continue;
+        candidates.push({ member, parentId: parent.id, parentName: parent.name });
+      }
+    }
+    const movementContext = { ...organization, account, temporaryOuId: account.temporaryOuId, restrictedOuId: account.restrictedOuId, ous };
+    checked = candidates.length;
+    for (const candidate of candidates) {
+      if (candidate.parentId === account.restrictedOuId) { skipped += 1; continue; }
+      await organization.client.send(new MoveAccountCommand({ AccountId: candidate.member.Id, SourceParentId: candidate.parentId, DestinationParentId: account.restrictedOuId }));
+      movedAccounts.push({ accountId: candidate.member.Id, name: candidate.member.Name || candidate.member.Id, email: candidate.member.Email || "", sourceParentName: candidate.parentName, destinationParentName: restrictedName });
       moved += 1;
     }
     if (Array.isArray(account.memberCache?.members)) {
-      const movedDirectory = new Map(members.map((member) => [member.Id, memberDirectoryEntry(movementContext, member, account.restrictedOuId)]));
+      const movedDirectory = new Map(candidates.filter((candidate) => candidate.parentId !== account.restrictedOuId).map(({ member }) => [member.Id, memberDirectoryEntry(movementContext, member, account.restrictedOuId)]));
       const directory = account.memberCache.members.map((member) => movedDirectory.get(member.accountId) || member);
       const cachedIds = new Set(directory.map((member) => member.accountId));
       for (const [memberId, member] of movedDirectory) if (!cachedIds.has(memberId)) directory.push(member);
       await saveMemberCache(account, directory.sort((left, right) => left.name.localeCompare(right.name, "zh-CN") || left.accountId.localeCompare(right.accountId)));
     }
-    const message = `临时 OU ${members.length} 个账号，归位 ${moved} 个`;
+    const message = allMembers ? `共检查 ${checked} 个账号，归位 ${moved} 个，已在禁止 SP/RI ${skipped} 个` : `临时 OU ${checked} 个账号，归位 ${moved} 个`;
     await recordRun(accountId, "success", message);
-    await recordOperation({ account, mode: "automatic", status: "success", checked, moved, skipped, message, movedAccounts });
-    return { accountId, checked: members.length, moved, skipped, message };
+    await recordOperation({ account, mode, status: "success", checked, moved, skipped, message, movedAccounts });
+    return { accountId, checked, moved, skipped, message };
   } catch (error) {
     const message = error.message || "归位失败";
     await recordRun(accountId, "failed", message);
-    await recordOperation({ account, mode: "automatic", status: "failed", checked, moved, skipped, message, movedAccounts });
+    await recordOperation({ account, mode, status: "failed", checked, moved, skipped, message, movedAccounts });
     throw error;
   }
 }
@@ -321,7 +333,7 @@ export async function handleOuAutomationRequest({ method, body, identity }) {
   if (body.action === "ou-options") return { discovery: publicDiscovery(await inspect(String(body.accountId || ""))) };
   if (body.action === "initialize") return initialize(body);
   if (body.action === "history") return { history: await movementHistory(String(body.accountId || "")) };
-  if (body.action === "run") return { result: await reconcile(String(body.accountId || "")) };
+  if (body.action === "run") return { result: await reconcile(String(body.accountId || ""), { allMembers: true, mode: "manual" }) };
   if (body.action === "run-all") return runScheduledOuAutomation();
   fail("Invalid OU automation action");
 }
