@@ -223,9 +223,13 @@ async function scanHistoricalAction(payer, month, persist = saveHistoricalSnapsh
   return task;
 }
 
-async function listBillingViews(client) {
+async function listBillingViews(client, period) {
   const result = []; let nextToken;
-  do { const page = await client.send(new ListBillingViewsCommand({ billingViewTypes: ["BILLING_TRANSFER"], maxResults: 100, nextToken })); result.push(...(page.billingViews || [])); nextToken = page.nextToken; } while (nextToken);
+  const activeTimeRange = {
+    activeAfterInclusive: new Date(`${period.start}T00:00:00.000Z`),
+    activeBeforeInclusive: new Date(Date.parse(`${period.end}T00:00:00.000Z`) - 1),
+  };
+  do { const page = await client.send(new ListBillingViewsCommand({ activeTimeRange, billingViewTypes: ["BILLING_TRANSFER"], maxResults: 100, nextToken })); result.push(...(page.billingViews || [])); nextToken = page.nextToken; } while (nextToken);
   return result;
 }
 async function listBillingGroups(client, billingPeriod) {
@@ -314,10 +318,12 @@ async function conductorData(clients, periods) {
 }
 
 async function scanPma(payer, clients, periods) {
-  const views = await listBillingViews(clients.billing);
-  const healthy = views.filter((view) => view.healthStatus?.statusCode === "HEALTHY");
+  const viewsByPeriod = Object.fromEntries(await Promise.all(periods.map(async (period) => [period.key, await listBillingViews(clients.billing, period)])));
+  const views = [...new Map(Object.values(viewsByPeriod).flat().map((view) => [view.arn, view])).values()];
+  const healthyByPeriod = Object.fromEntries(periods.map((period) => [period.key, (viewsByPeriod[period.key] || []).filter((view) => view.healthStatus?.statusCode === "HEALTHY")]));
+  const healthy = [...new Map(Object.values(healthyByPeriod).flat().map((view) => [view.arn, view])).values()];
   const { groups, items } = await conductorData(clients, periods);
-  const results = await Promise.all(healthy.flatMap((view) => periods.map((period) => costPeriod(clients.cost, period, view, true))));
+  const results = await Promise.all(periods.flatMap((period) => healthyByPeriod[period.key].map((view) => costPeriod(clients.cost, period, view, true))));
   const accountIds = new Set(results.flatMap((result) => [...Object.keys(result.accounts), ...Object.keys(result.support)]));
   for (const values of Object.values(items)) for (const item of values) if (item.AccountId) accountIds.add(item.AccountId);
   const accounts = [];
@@ -327,12 +333,13 @@ async function scanPma(payer, clients, periods) {
     const name = inferred.map((result) => result.accounts[accountId]).find(Boolean) || accountId;
     const account = accountShell(accountId, name, payer);
     for (const period of periods) {
+      const periodViews = healthyByPeriod[period.key] || [];
       const direct = results.filter((result) => result.period === period.key && (result.accounts[accountId] || Object.hasOwn(result.support, accountId)));
       const ids = [...new Set(direct.map((result) => result.sourceAccountId).filter(Boolean))].sort();
       const relevantIds = ids.length ? ids : sourceIds;
       const relevant = results.filter((result) => result.period === period.key && relevantIds.includes(result.sourceAccountId));
       const matches = groups[period.key].filter((group) => relevantIds.includes(group.PrimaryAccountId));
-      const mappingError = relevantIds.length !== 1 || matches.length !== 1 || relevantIds.some((id) => healthy.filter((view) => view.sourceAccountId === id).length !== 1);
+      const mappingError = relevantIds.length !== 1 || matches.length !== 1 || relevantIds.some((id) => periodViews.filter((view) => view.sourceAccountId === id).length !== 1);
       const group = matches.length === 1 ? matches[0] : null;
       if (period.key === "current" || account.cma === "未识别 CMA") account.cma = group?.Name || group?.PrimaryAccountId || (relevantIds.length === 1 ? `CMA ${relevantIds[0]}` : "未识别 CMA");
       const failed = relevant.length === 0 || relevant.some((result) => result.error);
