@@ -14,7 +14,6 @@ const automationRole = "TontianOrganizationAutomationRole";
 const pmaGroupNames = new Set(["PMA", "CMA组"]);
 const targetGroupNames = new Set([...pmaGroupNames, "老代付组"]);
 const prefix = "AWSBusinessSupportPlus_";
-const serviceName = "AWS Business Support+";
 const tolerance = 0.01;
 const supportWebhookUrl = process.env.WECOM_SUPPORT_WEBHOOK_URL || "";
 const historyCachePrefix = "supportBillingHistory_";
@@ -264,7 +263,7 @@ async function costPeriod(client, period, view = null, includeAccounts = true) {
     }
     let NextPageToken;
     do {
-      const page = await client.send(new GetCostAndUsageCommand({ TimePeriod: { Start: period.start, End: period.end }, Granularity: "MONTHLY", Metrics: ["UnblendedCost"], Filter: { And: [{ Dimensions: { Key: "SERVICE", Values: [serviceName] } }, { Dimensions: { Key: "RECORD_TYPE", Values: ["Support"] } }] }, GroupBy: [{ Type: "DIMENSION", Key: "LINKED_ACCOUNT" }], ...viewInput, NextPageToken }));
+      const page = await client.send(new GetCostAndUsageCommand({ TimePeriod: { Start: period.start, End: period.end }, Granularity: "MONTHLY", Metrics: ["UnblendedCost"], Filter: { Dimensions: { Key: "RECORD_TYPE", Values: ["Support"] } }, GroupBy: [{ Type: "DIMENSION", Key: "LINKED_ACCOUNT" }], ...viewInput, NextPageToken }));
       for (const block of page.ResultsByTime || []) for (const group of block.Groups || []) { const accountId = group.Keys?.[0]; if (!accountId) continue; result.support[accountId] = (result.support[accountId] || 0) + Number(group.Metrics?.UnblendedCost?.Amount || 0); result.accounts[accountId] ||= accountId; }
       NextPageToken = page.NextPageToken;
     } while (NextPageToken);
