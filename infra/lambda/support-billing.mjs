@@ -366,13 +366,16 @@ async function scanPma(payer, clients, periods) {
       const group = matches.length === 1 ? matches[0] : null;
       if (period.key === "current" || account.cma === "未识别 CMA") account.cma = group?.Name || group?.PrimaryAccountId || (relevantIds.length === 1 ? `CMA ${relevantIds[0]}` : "未识别 CMA");
       const failed = relevant.length === 0;
+      if (failed) {
+        for (const sourceAccountId of relevantIds) viewWarnings.push({ period: period.key, sourceAccountId, viewName: `CMA ${sourceAccountId}`, error: "当前账期没有可用账单视图" });
+      }
       const aws = failed ? null : relevant.reduce((sum, result) => sum + Number(result.support[accountId] || 0), 0);
       const candidates = items[period.key].filter((item) => cliCandidate(item, accountId, period.billingPeriod));
       account[period.key] = periodItem(accountId, aws, candidates, items[period.key], period.billingPeriod, failed, mappingError, group?.Arn || null, true);
     }
     accounts.push(account);
   }
-  return { accounts, diagnostics: { billingViews: views.length, healthyBillingViews: healthy.length, viewWarnings } };
+  return { accounts, diagnostics: { billingViews: views.length, healthyBillingViews: healthy.length, viewWarnings: [...new Map(viewWarnings.map((warning) => [`${warning.period}:${warning.sourceAccountId}`, warning])).values()] } };
 }
 
 async function scanLegacy(payer, clients, periods) {
@@ -607,8 +610,9 @@ async function writeSync(payer, clients, snapshot, periodKey, targets, automatic
       item.customLineItemName = name; item.synced = amount; item.status = "normal"; item.suggestion = "金额一致"; addHistory(account, automatic ? "自动同步" : action === "create" ? "创建" : "更新", amount);
     } catch (error) { summary.failed += 1; item.status = "query_error"; item.suggestion = `同步失败：${error?.message || error}`; }
   }
-  const message = `创建 ${summary.created}，更新 ${summary.updated}，修正 ${summary.repaired}，失败 ${summary.failed}`;
-  await persist(payer, snapshot, summary.failed ? "partial" : "success", message, automatic);
+  const warningCount = new Set((snapshot.diagnostics?.viewWarnings || []).map((warning) => warning.sourceAccountId || warning.viewName)).size;
+  const message = `创建 ${summary.created}，更新 ${summary.updated}，修正 ${summary.repaired}，失败 ${summary.failed}${warningCount ? `，${warningCount} 个账单视图数据待更新` : ""}`;
+  await persist(payer, snapshot, summary.failed || warningCount ? "partial" : "success", message, automatic);
   return { summary, snapshot };
 }
 
