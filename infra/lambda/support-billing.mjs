@@ -22,6 +22,27 @@ const historyScans = new Map();
 function fail(message, statusCode = 400) { const error = new Error(message); error.statusCode = statusCode; throw error; }
 function parseJson(value, fallback) { try { return JSON.parse(value || ""); } catch { return fallback; } }
 function cents(value) { return value === null || value === undefined ? null : Math.round(Number(value) * 100) / 100; }
+function wait(milliseconds) { return new Promise((resolve) => setTimeout(resolve, milliseconds)); }
+function transientCostError(error) {
+  const name = String(error?.name || "");
+  const message = String(error?.message || "").toLowerCase();
+  return ["DataUnavailableException", "LimitExceededException", "ThrottlingException", "TooManyRequestsException"].includes(name)
+    || message.includes("data is not available")
+    || message.includes("too many requests")
+    || message.includes("throttl");
+}
+async function sendCostRequest(client, command, attempts = 3) {
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try { return await client.send(command); }
+    catch (error) {
+      lastError = error;
+      if (!transientCostError(error) || attempt === attempts - 1) throw error;
+      await wait(750 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
 function itemValue(item, name) { return item?.[name]?.S || ""; }
 function canonicalGroupName(name) { return name === "CMA组" ? "PMA" : name; }
 function supportsBilling(item, groupName) { return groupName === "老代付组" || (pmaGroupNames.has(groupName) && item.accountType?.S === "pma"); }
@@ -260,14 +281,14 @@ async function costPeriod(client, period, view = null, includeAccounts = true) {
     if (includeAccounts) {
       let NextPageToken;
       do {
-        const page = await client.send(new GetDimensionValuesCommand({ TimePeriod: { Start: period.start, End: period.end }, Dimension: "LINKED_ACCOUNT", ...viewInput, NextPageToken }));
+        const page = await sendCostRequest(client, new GetDimensionValuesCommand({ TimePeriod: { Start: period.start, End: period.end }, Dimension: "LINKED_ACCOUNT", ...viewInput, NextPageToken }));
         for (const item of page.DimensionValues || []) result.accounts[item.Value] = item.Attributes?.description || item.Value;
         NextPageToken = page.NextPageToken;
       } while (NextPageToken);
     }
     let NextPageToken;
     do {
-      const page = await client.send(new GetCostAndUsageCommand({ TimePeriod: { Start: period.start, End: period.end }, Granularity: "MONTHLY", Metrics: ["UnblendedCost"], Filter: { Dimensions: { Key: "RECORD_TYPE", Values: ["Support"] } }, GroupBy: [{ Type: "DIMENSION", Key: "LINKED_ACCOUNT" }], ...viewInput, NextPageToken }));
+      const page = await sendCostRequest(client, new GetCostAndUsageCommand({ TimePeriod: { Start: period.start, End: period.end }, Granularity: "MONTHLY", Metrics: ["UnblendedCost"], Filter: { Dimensions: { Key: "RECORD_TYPE", Values: ["Support"] } }, GroupBy: [{ Type: "DIMENSION", Key: "LINKED_ACCOUNT" }], ...viewInput, NextPageToken }));
       for (const block of page.ResultsByTime || []) for (const group of block.Groups || []) { const accountId = group.Keys?.[0]; if (!accountId) continue; result.support[accountId] = (result.support[accountId] || 0) + Number(group.Metrics?.UnblendedCost?.Amount || 0); result.accounts[accountId] ||= accountId; }
       NextPageToken = page.NextPageToken;
     } while (NextPageToken);
@@ -324,32 +345,34 @@ async function scanPma(payer, clients, periods) {
   const healthy = [...new Map(Object.values(healthyByPeriod).flat().map((view) => [view.arn, view])).values()];
   const { groups, items } = await conductorData(clients, periods);
   const results = await Promise.all(periods.flatMap((period) => healthyByPeriod[period.key].map((view) => costPeriod(clients.cost, period, view, true))));
-  const accountIds = new Set(results.flatMap((result) => [...Object.keys(result.accounts), ...Object.keys(result.support)]));
+  const viewWarnings = [...new Map(results.filter((result) => result.error).map((result) => [`${result.period}:${result.sourceAccountId}`, { period: result.period, sourceAccountId: result.sourceAccountId, viewName: result.viewName, error: result.error }])).values()];
+  const usableResults = results.filter((result) => !result.error);
+  const accountIds = new Set(usableResults.flatMap((result) => [...Object.keys(result.accounts), ...Object.keys(result.support)]));
   for (const values of Object.values(items)) for (const item of values) if (item.AccountId) accountIds.add(item.AccountId);
   const accounts = [];
   for (const accountId of [...accountIds].sort()) {
-    const inferred = results.filter((result) => result.accounts[accountId] || Object.hasOwn(result.support, accountId));
+    const inferred = usableResults.filter((result) => result.accounts[accountId] || Object.hasOwn(result.support, accountId));
     const sourceIds = [...new Set(inferred.map((result) => result.sourceAccountId).filter(Boolean))].sort();
     const name = inferred.map((result) => result.accounts[accountId]).find(Boolean) || accountId;
     const account = accountShell(accountId, name, payer);
     for (const period of periods) {
       const periodViews = healthyByPeriod[period.key] || [];
-      const direct = results.filter((result) => result.period === period.key && (result.accounts[accountId] || Object.hasOwn(result.support, accountId)));
+      const direct = usableResults.filter((result) => result.period === period.key && (result.accounts[accountId] || Object.hasOwn(result.support, accountId)));
       const ids = [...new Set(direct.map((result) => result.sourceAccountId).filter(Boolean))].sort();
       const relevantIds = ids.length ? ids : sourceIds;
-      const relevant = results.filter((result) => result.period === period.key && relevantIds.includes(result.sourceAccountId));
+      const relevant = usableResults.filter((result) => result.period === period.key && relevantIds.includes(result.sourceAccountId));
       const matches = groups[period.key].filter((group) => relevantIds.includes(group.PrimaryAccountId));
       const mappingError = relevantIds.length !== 1 || matches.length !== 1 || relevantIds.some((id) => periodViews.filter((view) => view.sourceAccountId === id).length !== 1);
       const group = matches.length === 1 ? matches[0] : null;
       if (period.key === "current" || account.cma === "未识别 CMA") account.cma = group?.Name || group?.PrimaryAccountId || (relevantIds.length === 1 ? `CMA ${relevantIds[0]}` : "未识别 CMA");
-      const failed = relevant.length === 0 || relevant.some((result) => result.error);
+      const failed = relevant.length === 0;
       const aws = failed ? null : relevant.reduce((sum, result) => sum + Number(result.support[accountId] || 0), 0);
       const candidates = items[period.key].filter((item) => cliCandidate(item, accountId, period.billingPeriod));
       account[period.key] = periodItem(accountId, aws, candidates, items[period.key], period.billingPeriod, failed, mappingError, group?.Arn || null, true);
     }
     accounts.push(account);
   }
-  return { accounts, diagnostics: { billingViews: views.length, healthyBillingViews: healthy.length } };
+  return { accounts, diagnostics: { billingViews: views.length, healthyBillingViews: healthy.length, viewWarnings } };
 }
 
 async function scanLegacy(payer, clients, periods) {
@@ -360,6 +383,7 @@ async function scanLegacy(payer, clients, periods) {
   try { for (const item of await listOrganizationAccounts(clients.organizations)) if (item.Id) names[item.Id] = item.Name || item.Id; } catch {}
   const costs = {};
   await Promise.all(periods.map(async (period) => { costs[period.key] = await costPeriod(clients.cost, period, null, Object.keys(names).length === 0); }));
+  const viewWarnings = Object.values(costs).filter((result) => result.error).map((result) => ({ period: result.period, sourceAccountId: payer.accountId, viewName: payer.remark, error: result.error }));
   const accountIds = new Set([...Object.keys(names), payer.accountId]);
   for (const result of Object.values(costs)) { Object.keys(result.accounts).forEach((id) => accountIds.add(id)); Object.keys(result.support).forEach((id) => accountIds.add(id)); }
   for (const values of Object.values(associations)) for (const item of values) if (item.AccountId) accountIds.add(item.AccountId);
@@ -380,7 +404,7 @@ async function scanLegacy(payer, clients, periods) {
     }
     accounts.push(account);
   }
-  return { accounts, diagnostics: { organizationAccounts: Object.keys(names).length, billingGroups: Object.fromEntries(periods.map((period) => [period.key, groups[period.key].length])) } };
+  return { accounts, diagnostics: { organizationAccounts: Object.keys(names).length, billingGroups: Object.fromEntries(periods.map((period) => [period.key, groups[period.key].length])), viewWarnings } };
 }
 
 function blankPeriod() { return { aws: null, synced: null, status: "query_error", suggestion: "尚未扫描", billingGroupMember: false, billingGroupArn: null, customLineItemArn: null, customLineItemName: null, managedCustomLineItems: [] }; }
@@ -388,14 +412,34 @@ async function scanWithClients(payer, clients, selected = ["current", "previous"
   const periods = periodDefinitions(selected);
   const result = payer.architecture === "pma" ? await scanPma(payer, clients, periods) : await scanLegacy(payer, clients, periods);
   const old = new Map((previous?.accounts || []).map((account) => [account.id, account]));
+  const warnings = result.diagnostics?.viewWarnings || [];
+  const affectedByWarning = (account) => warnings.some((warning) => warning.sourceAccountId && (account?.sourceAccountId === warning.sourceAccountId || String(account?.cma || "").includes(warning.sourceAccountId)));
+  const pendingPeriod = (item) => ({ ...(item || blankPeriod()), status: "data_pending", suggestion: "AWS 账单数据待更新" });
   for (const account of result.accounts) {
     const prior = old.get(account.id);
     account.history = prior?.history || [];
+    if (affectedByWarning(account) || affectedByWarning(prior)) {
+      for (const period of periods) {
+        if (account[period.key]?.status !== "query_error") continue;
+        const priorPeriod = prior?.[period.key];
+        account[period.key] = priorPeriod && !["query_error", "data_pending"].includes(priorPeriod.status) ? priorPeriod : pendingPeriod(account[period.key]);
+      }
+    }
     for (const key of ["current", "previous"]) if (!account[key]) account[key] = prior?.[key] || blankPeriod();
     for (const period of periodDefinitions()) {
       const item = account[period.key];
       if (payer.suppressions.has(`${account.id}:${period.billingPeriod}`) && !item.customLineItemArn) { item.status = "manual_deleted"; item.suggestion = "已人工删除，本月不自动重建"; }
     }
+  }
+  const scannedIds = new Set(result.accounts.map((account) => account.id));
+  if (warnings.length) {
+    for (const prior of previous?.accounts || []) {
+      if (scannedIds.has(prior.id) || !affectedByWarning(prior)) continue;
+      const carried = { ...prior, history: prior.history || [] };
+      for (const period of periods) if (carried[period.key]?.status === "query_error") carried[period.key] = pendingPeriod(carried[period.key]);
+      result.accounts.push(carried);
+    }
+    result.accounts.sort((left, right) => String(left.name || left.id).localeCompare(String(right.name || right.id)));
   }
   const definitions = periodDefinitions();
   return { lastScanAt: new Date().toISOString(), months: Object.fromEntries(definitions.map((item) => [item.key, item.billingPeriod])), accounts: result.accounts, diagnostics: result.diagnostics };
@@ -571,7 +615,8 @@ async function writeSync(payer, clients, snapshot, periodKey, targets, automatic
 async function scanAction(payer, persist = saveSnapshot) {
   const clients = await clientsFor(payer);
   const snapshot = await scanWithClients(payer, clients);
-  await persist(payer, snapshot, "success", `扫描 ${snapshot.accounts.length} 个账号`);
+  const warningCount = new Set((snapshot.diagnostics?.viewWarnings || []).map((warning) => warning.sourceAccountId || warning.viewName)).size;
+  await persist(payer, snapshot, warningCount ? "partial" : "success", warningCount ? `${warningCount} 个账单视图数据待更新` : `扫描 ${snapshot.accounts.length} 个账号`);
   return snapshot;
 }
 

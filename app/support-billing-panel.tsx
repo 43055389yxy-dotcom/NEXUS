@@ -6,17 +6,17 @@ import styles from './support-billing.module.css';
 
 type PeriodKey = 'current' | 'previous';
 type SelectedPeriod = PeriodKey | `${number}-${number}`;
-type Status = 'normal' | 'create' | 'update' | 'native_visible' | 'query_error' | 'zero_risk' | 'mapping_error' | 'mapping_ignored' | 'duplicate_cli' | 'period_range_error' | 'manual_deleted';
+type Status = 'normal' | 'create' | 'update' | 'native_visible' | 'query_error' | 'data_pending' | 'zero_risk' | 'mapping_error' | 'mapping_ignored' | 'duplicate_cli' | 'period_range_error' | 'manual_deleted';
 type BillingPeriod = { aws: number | null; synced: number | null; status: Status; suggestion: string; billingGroupMember: boolean; customLineItemArn?: string; customLineItemName?: string };
 type BillingAccount = { id: string; name: string; cma: string; autoSyncEnabled?: boolean; current: BillingPeriod; previous: BillingPeriod; historical?: BillingPeriod; history?: { date: string; action: string; amount: string }[] };
-type Snapshot = { lastScanAt: string; months: Record<PeriodKey, string>; historyMonth?: string; accounts: BillingAccount[] };
+type Snapshot = { lastScanAt: string; months: Record<PeriodKey, string>; historyMonth?: string; accounts: BillingAccount[]; diagnostics?: { viewWarnings?: Array<{ sourceAccountId?: string; viewName?: string }> } };
 type Payer = { accountId: string; remark: string; groupName: string; architecture: 'pma' | 'legacy_payer'; autoSyncOverrides?: Record<string, boolean>; lastScanAt: string; lastStatus: string; lastMessage: string; accountCount: number; pendingCount: number; blockedCount: number };
 type ConfirmAction = 'sync' | 'delete';
 type RowFilter = 'all' | 'pending' | 'blocked' | 'synced' | 'enabled';
 type PayerState = 'pending' | 'abnormal' | 'unscanned' | 'normal';
 
 const statusText: Record<Status, string> = {
-  normal: '金额一致', create: '待创建', update: '待更新', native_visible: '原生可见', query_error: '处理失败', zero_risk: '疑似清零', mapping_error: '映射异常', mapping_ignored: '已通过', duplicate_cli: '重复账单', period_range_error: '周期待修正', manual_deleted: '已人工删除',
+  normal: '金额一致', create: '待创建', update: '待更新', native_visible: '原生可见', query_error: '处理失败', data_pending: '数据待更新', zero_risk: '疑似清零', mapping_error: '映射异常', mapping_ignored: '已通过', duplicate_cli: '重复账单', period_range_error: '周期待修正', manual_deleted: '已人工删除',
 };
 const safeToSync = (status: Status) => ['create', 'update', 'query_error', 'period_range_error'].includes(status);
 const risky = (status: Status) => ['query_error', 'zero_risk', 'mapping_error', 'duplicate_cli', 'period_range_error'].includes(status);
@@ -108,11 +108,12 @@ export function SupportBillingPanel({ onNotice }: { onNotice: (message: string) 
           if (!historyMonth) setPayers((current) => current.map((item) => {
             if (item.accountId !== accountId) return item;
             const isNewerScan = Date.parse(value.snapshot.lastScanAt) > Date.parse(item.lastScanAt || '');
+            const warningCount = new Set((value.snapshot.diagnostics?.viewWarnings || []).map((warning) => warning.sourceAccountId || warning.viewName)).size;
             return {
               ...item,
               lastScanAt: value.snapshot.lastScanAt,
-              lastStatus: isNewerScan ? 'success' : item.lastStatus,
-              lastMessage: isNewerScan ? '' : item.lastMessage,
+              lastStatus: warningCount ? 'partial' : isNewerScan ? 'success' : item.lastStatus,
+              lastMessage: warningCount ? `${warningCount} 个账单视图数据待更新` : isNewerScan ? '' : item.lastMessage,
               accountCount: value.snapshot.accounts.length,
               pendingCount: value.snapshot.accounts.filter((account) => safeToSync(account.current.status)).length,
               blockedCount: value.snapshot.accounts.filter((account) => risky(account.current.status) && !safeToSync(account.current.status)).length,
