@@ -1,6 +1,6 @@
 import { DynamoDBClient, GetItemCommand, PutItemCommand, QueryCommand, ScanCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
 import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
-import { AttachPolicyCommand, CreateOrganizationalUnitCommand, CreatePolicyCommand, DescribeOrganizationCommand, DescribePolicyCommand, DetachPolicyCommand, EnablePolicyTypeCommand, ListAccountsCommand, ListAccountsForParentCommand, ListOrganizationalUnitsForParentCommand, ListParentsCommand, ListPoliciesCommand, ListPoliciesForTargetCommand, ListRootsCommand, MoveAccountCommand, OrganizationsClient, UpdatePolicyCommand } from "@aws-sdk/client-organizations";
+import { AttachPolicyCommand, CreateOrganizationalUnitCommand, CreatePolicyCommand, DescribeOrganizationCommand, DescribePolicyCommand, DetachPolicyCommand, EnablePolicyTypeCommand, ListAccountsForParentCommand, ListOrganizationalUnitsForParentCommand, ListPoliciesCommand, ListPoliciesForTargetCommand, ListRootsCommand, MoveAccountCommand, OrganizationsClient, UpdatePolicyCommand } from "@aws-sdk/client-organizations";
 
 const dynamodb = new DynamoDBClient({});
 const sts = new STSClient({});
@@ -174,7 +174,6 @@ async function initialize(body) {
   return { configuration, discovery: publicDiscovery(value), members: value.account.memberCache?.members || [] };
 }
 
-async function organizationAccounts(client) { const result = []; let NextToken; do { const page = await client.send(new ListAccountsCommand({ NextToken })); result.push(...(page.Accounts || [])); NextToken = page.NextToken; } while (NextToken); return result; }
 async function accountsForParent(client, parentId) { const result = []; let NextToken; do { const page = await client.send(new ListAccountsForParentCommand({ ParentId: parentId, NextToken })); result.push(...(page.Accounts || [])); NextToken = page.NextToken; } while (NextToken); return result; }
 
 async function recordOperation({ account, mode, status, checked, moved, skipped, message, movedAccounts = [] }) {
@@ -222,12 +221,14 @@ async function movementHistory(accountId) {
 }
 async function memberDirectory(value) {
   const ouNames = new Map(value.ous.map((ou) => [ou.id, ou.name]));
-  const members = (await organizationAccounts(value.client)).filter((member) => member.Id && member.Id !== value.managementAccountId && member.Status !== "SUSPENDED" && member.State !== "SUSPENDED");
+  const parents = [{ id: value.rootId }, ...value.ous.map((ou) => ({ id: ou.id }))];
   const result = [];
-  for (const member of members) {
-    const parent = (await value.client.send(new ListParentsCommand({ ChildId: member.Id }))).Parents?.[0];
-    const parentId = parent?.Id || "";
-    result.push(memberDirectoryEntry(value, member, parentId, ouNames));
+  for (const parent of parents) {
+    const members = await accountsForParent(value.client, parent.id);
+    for (const member of members) {
+      if (!member.Id || member.Id === value.managementAccountId || member.Status === "SUSPENDED" || member.State === "SUSPENDED") continue;
+      result.push(memberDirectoryEntry(value, member, parent.id, ouNames));
+    }
   }
   return result.sort((left, right) => left.name.localeCompare(right.name, "zh-CN") || left.accountId.localeCompare(right.accountId));
 }
