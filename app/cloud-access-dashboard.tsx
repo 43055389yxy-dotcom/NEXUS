@@ -466,6 +466,7 @@ fi
 aws iam attach-role-policy --role-name TontianOperationsRole --policy-arn arn:aws:iam::aws:policy/ReadOnlyAccess
 aws iam attach-role-policy --role-name TontianOperationsRole --policy-arn arn:aws:iam::aws:policy/AWSBillingReadOnlyAccess
 aws iam attach-role-policy --role-name TontianOperationsRole --policy-arn arn:aws:iam::aws:policy/AWSAccountManagementReadOnlyAccess
+aws iam attach-role-policy --role-name TontianOperationsRole --policy-arn arn:aws:iam::aws:policy/AWSCloudShellFullAccess
 cat >/tmp/tontian-organization-operations.json <<'EOF_ORG'
 {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["organizations:MoveAccount","organizations:InviteAccountToOrganization"],"Resource":"*"}]}
 EOF_ORG

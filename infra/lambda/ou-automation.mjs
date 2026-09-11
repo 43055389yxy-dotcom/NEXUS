@@ -1,6 +1,6 @@
 import { DynamoDBClient, GetItemCommand, PutItemCommand, QueryCommand, ScanCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
 import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
-import { AttachPolicyCommand, CreateOrganizationalUnitCommand, CreatePolicyCommand, DescribeOrganizationCommand, DescribePolicyCommand, DetachPolicyCommand, EnablePolicyTypeCommand, ListAccountsForParentCommand, ListOrganizationalUnitsForParentCommand, ListPoliciesCommand, ListPoliciesForTargetCommand, ListRootsCommand, MoveAccountCommand, OrganizationsClient, UpdatePolicyCommand } from "@aws-sdk/client-organizations";
+import { AttachPolicyCommand, CreateOrganizationalUnitCommand, CreatePolicyCommand, DeletePolicyCommand, DescribeOrganizationCommand, DescribePolicyCommand, DetachPolicyCommand, EnablePolicyTypeCommand, ListAccountsForParentCommand, ListOrganizationalUnitsForParentCommand, ListPoliciesCommand, ListPoliciesForTargetCommand, ListRootsCommand, ListTargetsForPolicyCommand, MoveAccountCommand, OrganizationsClient, UpdatePolicyCommand } from "@aws-sdk/client-organizations";
 
 const dynamodb = new DynamoDBClient({});
 const sts = new STSClient({});
@@ -13,8 +13,9 @@ const targetGroupNames = new Set([...(process.env.OU_AUTOMATION_GROUP_NAMES || "
 const temporaryName = "临时";
 const restrictedName = "禁止 SP/RI";
 const restrictedPolicyName = "NEXUS-Restricted-Guardrails";
+const obsoletePolicyName = "DenyLeaveAndCloseAccount";
 const policyDocuments = {
-  [restrictedPolicyName]: { Version: "2012-10-17", Statement: [{ Effect: "Deny", Action: ["savingsplans:*", "ec2:PurchaseReservedInstancesOffering", "rds:PurchaseReservedDBInstancesOffering", "organizations:LeaveOrganization", "account:CloseAccount"], Resource: "*" }] },
+  [restrictedPolicyName]: { Version: "2012-10-17", Statement: [{ Effect: "Deny", Action: ["savingsplans:CreateSavingsPlan", "ec2:PurchaseReservedInstancesOffering", "rds:PurchaseReservedDBInstancesOffering", "organizations:LeaveOrganization", "account:CloseAccount"], Resource: "*" }] },
 };
 
 function fail(message, statusCode = 400) { const error = new Error(message); error.statusCode = statusCode; throw error; }
@@ -145,6 +146,24 @@ async function detachIfAttached(client, targetId, policyId) {
   if (policies.some((policy) => policy.Id === policyId)) await client.send(new DetachPolicyCommand({ PolicyId: policyId, TargetId: targetId }));
 }
 
+async function policyTargets(client, policyId) {
+  const targets = [];
+  let NextToken;
+  do { const page = await client.send(new ListTargetsForPolicyCommand({ PolicyId: policyId, NextToken })); targets.push(...(page.Targets || [])); NextToken = page.NextToken; } while (NextToken);
+  return targets;
+}
+
+async function detachFromEverywhereExcept(client, policyId, keepTargetId = "") {
+  for (const target of await policyTargets(client, policyId)) if (target.TargetId && target.TargetId !== keepTargetId) await client.send(new DetachPolicyCommand({ PolicyId: policyId, TargetId: target.TargetId }));
+}
+
+async function removeObsoletePolicies(client, policies) {
+  for (const policy of policies.filter((item) => item.Name === obsoletePolicyName && !item.AwsManaged && item.Id)) {
+    await detachFromEverywhereExcept(client, policy.Id);
+    await client.send(new DeletePolicyCommand({ PolicyId: policy.Id }));
+  }
+}
+
 async function configureFromInspection(value, mapping = {}) {
   const temporaryOu = await resolveOu(value, String(mapping.temporaryOuId || ""), temporaryName, mapping.createTemporary === true);
   const restrictedOu = await resolveOu(value, String(mapping.restrictedOuId || ""), restrictedName, mapping.createRestricted === true);
@@ -156,7 +175,8 @@ async function configureFromInspection(value, mapping = {}) {
   await attach(value.client, temporaryOu.id, fullAccessId);
   await attach(value.client, restrictedOu.id, fullAccessId);
   await attach(value.client, restrictedOu.id, restrictedPolicyId);
-  await detachIfAttached(value.client, temporaryOu.id, restrictedPolicyId);
+  await detachFromEverywhereExcept(value.client, restrictedPolicyId, restrictedOu.id);
+  await removeObsoletePolicies(value.client, policies);
   const updatedAt = new Date().toISOString();
   await dynamodb.send(new UpdateItemCommand({ TableName: accountsTable, Key: { accountId: { S: value.account.accountId } }, UpdateExpression: "SET temporaryOuId=:temporary, restrictedOuId=:restricted, ouAutomationUpdatedAt=:updated", ExpressionAttributeValues: { ":temporary": { S: temporaryOu.id }, ":restricted": { S: restrictedOu.id }, ":updated": { S: updatedAt } } }));
   return { accountId: value.account.accountId, temporaryOu, restrictedOu, configured: true, updatedAt };
