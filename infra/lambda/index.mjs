@@ -14,7 +14,17 @@ const ADMIN_ROLES = new Set(["super_admin", "admin"]);
 const UNGROUPED = "__ungrouped";
 
 function response(statusCode, body) {
-  return { statusCode, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }, body: JSON.stringify(body) };
+  return {
+    statusCode,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      "access-control-allow-origin": "*",
+      "access-control-allow-methods": "GET,POST,OPTIONS",
+      "access-control-allow-headers": "authorization,content-type,x-api-key",
+    },
+    body: JSON.stringify(body),
+  };
 }
 
 function authorized(event) {
@@ -286,8 +296,9 @@ export const handler = async (event) => {
   try {
     if (isSupportBillingScheduledEvent(event)) return { supportBilling: await runScheduledSupportBilling().catch((error) => ({ error: error?.message || "Support billing automation failed" })) };
     if (isOuAutomationScheduledEvent(event)) return { ou: await runScheduledOuAutomation().catch((error) => ({ error: error?.message || "OU automation failed" })) };
-    if (!authorized(event)) return response(401, { error: "Unauthorized" });
     const method = event.requestContext?.http?.method || event.httpMethod;
+    if (method === "OPTIONS") return response(200, { ok: true });
+    if (!authorized(event)) return response(401, { error: "Unauthorized" });
     const path = event.rawPath || event.path || "/";
     if (method === "GET" && path === "/health") return response(200, { ok: true, accountId: operationsAccountId });
     const identity = requestIdentity(event);
