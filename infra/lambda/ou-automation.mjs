@@ -107,10 +107,27 @@ async function resolveOu(value, selectedId, name, allowCreate) {
 
 
 async function listScps(client, rootId) {
-  const result = [];
-  let NextToken;
-  try { do { const page = await client.send(new ListPoliciesCommand({ Filter: "SERVICE_CONTROL_POLICY", NextToken })); result.push(...(page.Policies || [])); NextToken = page.NextToken; } while (NextToken); }
-  catch (error) { if (error?.name !== "PolicyTypeNotEnabledException") throw error; await client.send(new EnablePolicyTypeCommand({ RootId: rootId, PolicyType: "SERVICE_CONTROL_POLICY" })); return listScps(client, rootId); }
+  const read = async () => {
+    const result = [];
+    let NextToken;
+    do { const page = await client.send(new ListPoliciesCommand({ Filter: "SERVICE_CONTROL_POLICY", NextToken })); result.push(...(page.Policies || [])); NextToken = page.NextToken; } while (NextToken);
+    return result;
+  };
+
+  let result = [];
+  try { result = await read(); }
+  catch (error) { if (error?.name !== "PolicyTypeNotEnabledException") throw error; }
+  if (result.some((policy) => policy.Name === "FullAWSAccess")) return result;
+
+  try { await client.send(new EnablePolicyTypeCommand({ RootId: rootId, PolicyType: "SERVICE_CONTROL_POLICY" })); }
+  catch (error) { if (error?.name !== "DuplicatePolicyTypeAttachmentException") throw error; }
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+    try { result = await read(); }
+    catch (error) { if (error?.name !== "PolicyTypeNotEnabledException") throw error; }
+    if (result.some((policy) => policy.Name === "FullAWSAccess")) return result;
+  }
   return result;
 }
 
