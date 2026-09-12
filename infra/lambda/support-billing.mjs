@@ -685,7 +685,41 @@ async function sendSupportSyncNotification(payer, snapshot, periodKey, targets, 
   }
 }
 
-async function syncAction(payer, periodKey, targets, automatic = false, persist = saveSnapshot) {
+async function sendDailySupportSyncNotification(results) {
+  if (!supportWebhookUrl) return;
+  const webhook = new URL(supportWebhookUrl);
+  if (webhook.protocol !== "https:" || webhook.hostname !== "qyapi.weixin.qq.com" || webhook.pathname !== "/cgi-bin/webhook/send") throw new Error("企业微信机器人地址不正确");
+  const executed = results.filter((item) => !item.skipped);
+  const payerFailures = results.filter((item) => item.error);
+  const totals = executed.reduce((sum, item) => ({
+    accounts: sum.accounts + Number(item.accounts || 0),
+    created: sum.created + Number(item.created || 0),
+    updated: sum.updated + Number(item.updated || 0),
+    repaired: sum.repaired + Number(item.repaired || 0),
+    failed: sum.failed + Number(item.failed || 0),
+    syncedAmount: sum.syncedAmount + Number(item.syncedAmount || 0),
+  }), { accounts: 0, created: 0, updated: 0, repaired: 0, failed: 0, syncedAmount: 0 });
+  const time = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date());
+  const failureLines = payerFailures.slice(0, 10).map((item) => `${notificationText(item.payerName || item.accountId)}（${item.accountId}）：${notificationText(item.error)}`);
+  if (payerFailures.length > failureLines.length) failureLines.push(`另有 ${payerFailures.length - failureLines.length} 个代付账号失败，请在网页查看`);
+  const content = [
+    `**Support+ 每日同步汇总**`,
+    `代付账号 ${results.length}｜执行 ${executed.length}｜跳过 ${results.length - executed.length}｜整组失败 ${payerFailures.length}`,
+    `成员账号 ${totals.accounts}｜新增 ${totals.created}｜更新 ${totals.updated}｜周期修正 ${totals.repaired}｜处理失败 ${totals.failed}`,
+    `同步 ${moneyString(totals.syncedAmount)}｜自动｜${time}`,
+    ...failureLines,
+  ].join("\n");
+  const response = await fetch(webhook, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ msgtype: "markdown", markdown: { content } }),
+    signal: AbortSignal.timeout(6000),
+  });
+  const payload = await response.json();
+  if (!response.ok || payload?.errcode !== 0) throw new Error(payload?.errmsg || `企业微信通知失败：HTTP ${response.status}`);
+}
+
+async function syncAction(payer, periodKey, targets, automatic = false, persist = saveSnapshot, notify = true) {
   const clients = await clientsFor(payer);
   let snapshot = await scanWithClients(payer, clients, automatic ? ["current"] : ["current", "previous"]);
   const writeTargets = automatic ? new Set(snapshot.accounts.filter((account) => accountAutoSyncEnabled(payer, account.id)).map((account) => account.id)) : targets;
@@ -693,8 +727,10 @@ async function syncAction(payer, periodKey, targets, automatic = false, persist 
   const repair = await repairRanges(clients, snapshot, periodKey, writeTargets);
   if (repair.repaired) snapshot = await scanWithClients(payer, clients, automatic ? ["current"] : ["current", "previous"], snapshot);
   const result = await writeSync(payer, clients, snapshot, periodKey, writeTargets, automatic, repair.repaired, repair.failed, persist);
-  try { await sendSupportSyncNotification(payer, result.snapshot, periodKey, writeTargets, automatic, result.summary, beforeSync); }
-  catch (error) { console.error("Support billing WeCom notification failed", error); }
+  if (notify) {
+    try { await sendSupportSyncNotification(payer, result.snapshot, periodKey, writeTargets, automatic, result.summary, beforeSync); }
+    catch (error) { console.error("Support billing WeCom notification failed", error); }
+  }
   return result;
 }
 
@@ -744,10 +780,15 @@ export function isSupportBillingScheduledEvent(event) { return event?.task === "
 export async function runScheduledSupportBilling() {
   const payers = await listPayers(); const results = [];
   for (const payer of payers) {
-    if (!automaticDue(payer)) { results.push({ accountId: payer.accountId, skipped: true }); continue; }
-    try { const value = await syncAction(payer, "current", null, true); results.push({ accountId: payer.accountId, ...value.summary }); }
-    catch (error) { await markFailure(payer, error?.message || "自动对账失败"); results.push({ accountId: payer.accountId, error: error?.message || "自动对账失败" }); }
+    if (!automaticDue(payer)) { results.push({ accountId: payer.accountId, payerName: payer.remark, skipped: true }); continue; }
+    try {
+      const value = await syncAction(payer, "current", null, true, saveSnapshot, false);
+      results.push({ accountId: payer.accountId, payerName: payer.remark, accounts: value.snapshot.accounts.length, ...value.summary });
+    }
+    catch (error) { await markFailure(payer, error?.message || "自动对账失败"); results.push({ accountId: payer.accountId, payerName: payer.remark, error: error?.message || "自动对账失败" }); }
   }
+  try { await sendDailySupportSyncNotification(results); }
+  catch (error) { console.error("Support billing daily summary notification failed", error); }
   return { accounts: results.length, results };
 }
 
