@@ -19,3 +19,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: '请求格式不正确' }, { status: 400 });
   }
 }
+
+export async function PATCH(request: Request) {
+  const { user, denied } = await requireIdentity(true);
+  if (denied || !user) return denied;
+  try {
+    const body = await request.json();
+    return groupBroker('/groups', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, user);
+  } catch {
+    return NextResponse.json({ error: '请求格式不正确' }, { status: 400 });
+  }
+}

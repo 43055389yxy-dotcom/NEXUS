@@ -4,6 +4,7 @@ import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
 import { handleOuAutomationRequest, isOuAutomationScheduledEvent, runScheduledOuAutomation } from "./ou-automation.mjs";
 import { handleMfaRecoveryRequest } from "./mfa-recovery.mjs";
 import { handleSupportBillingRequest, isSupportBillingScheduledEvent, runScheduledSupportBilling } from "./support-billing.mjs";
+import { handleApnMonitorRequest, isApnMonitorScheduledEvent, runScheduledApnMonitor } from "./apn-monitor.mjs";
 
 const dynamodb = new DynamoDBClient({});
 const sts = new STSClient({});
@@ -206,6 +207,23 @@ async function createGroup(body) {
   return group;
 }
 
+async function updateGroup(body) {
+  const groupId = String(body.groupId || "").trim();
+  const name = String(body.name || "").trim();
+  if (!groupId || groupId === "builtin-pma") throw new Error("Invalid group ID");
+  if (!name || name.length > 50) throw new Error("Group name is required");
+  const result = await dynamodb.send(new UpdateItemCommand({
+    TableName: groupsTable,
+    Key: { groupId: { S: groupId } },
+    UpdateExpression: "SET #name = :name, updatedAt = :updatedAt",
+    ConditionExpression: "attribute_exists(groupId) AND attribute_exists(#name)",
+    ExpressionAttributeNames: { "#name": "name" },
+    ExpressionAttributeValues: { ":name": { S: name }, ":updatedAt": { S: new Date().toISOString() } },
+    ReturnValues: "ALL_NEW",
+  }));
+  return { groupId, name: result.Attributes.name.S, createdAt: result.Attributes.createdAt?.S };
+}
+
 async function getAccount(accountId) {
   const result = await dynamodb.send(new GetItemCommand({ TableName: accountsTable, Key: { accountId: { S: accountId } }, ConsistentRead: true }));
   if (!result.Item) return null;
@@ -295,6 +313,7 @@ async function savePermissions(identity, body) {
 export const handler = async (event) => {
   try {
     if (isSupportBillingScheduledEvent(event)) return { supportBilling: await runScheduledSupportBilling().catch((error) => ({ error: error?.message || "Support billing automation failed" })) };
+    if (isApnMonitorScheduledEvent(event)) return { apnMonitor: await runScheduledApnMonitor().catch((error) => ({ error: error?.message || "APN monitor automation failed" })) };
     if (isOuAutomationScheduledEvent(event)) return { ou: await runScheduledOuAutomation().catch((error) => ({ error: error?.message || "OU automation failed" })) };
     const method = event.requestContext?.http?.method || event.httpMethod;
     if (method === "OPTIONS") return response(200, { ok: true });
@@ -309,11 +328,13 @@ export const handler = async (event) => {
     if (method === "DELETE" && path === "/accounts") { requireAdmin(identity); return response(200, { account: await deleteAccount(parseBody(event)) }); }
     if (method === "GET" && path === "/groups") return response(200, { groups: await listGroups(identity) });
     if (method === "POST" && path === "/groups") { requireAdmin(identity); return response(201, { group: await createGroup(parseBody(event)) }); }
+    if (method === "PATCH" && path === "/groups") { requireAdmin(identity); return response(200, { group: await updateGroup(parseBody(event)) }); }
     if (method === "GET" && path === "/permissions") return response(200, { users: await listPermissions(identity) });
     if (method === "POST" && path === "/permissions") return response(200, { user: await savePermissions(identity, parseBody(event)) });
     if ((method === "GET" || method === "POST") && path === "/ou-automation") return response(200, await handleOuAutomationRequest({ method, body: method === "POST" ? parseBody(event) : {}, identity }));
     if (method === "POST" && path === "/mfa-recovery") return response(200, await handleMfaRecoveryRequest({ method, body: parseBody(event), identity }));
     if ((method === "GET" || method === "POST") && path === "/support-billing") return response(200, await handleSupportBillingRequest({ method, body: method === "POST" ? parseBody(event) : {}, identity }));
+    if ((method === "GET" || method === "POST") && path === "/apn-monitor") { requireAdmin(identity); return response(200, await handleApnMonitorRequest({ method, body: method === "POST" ? parseBody(event) : {} })); }
     if (method === "POST" && path === "/console-login") return response(200, await createConsoleLogin(identity, parseBody(event)));
     return response(404, { error: "Not found" });
   } catch (error) {

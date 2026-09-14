@@ -41,6 +41,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
   const [showAdd, setShowAdd] = useState(false);
   const [billingGuideAccount, setBillingGuideAccount] = useState<{ id: string; name: string } | null>(null);
   const [showAddGroup, setShowAddGroup] = useState(false);
+  const [editingGroup, setEditingGroup] = useState<GroupRecord | null>(null);
   const [activeMenu, setActiveMenu] = useState('');
   const [editing, setEditing] = useState<ManagedAccount | null>(null);
   const [deleting, setDeleting] = useState<ManagedAccount | null>(null);
@@ -196,19 +197,20 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
     event.preventDefault();
     const name = groupName.trim();
     if (!name) return;
-    if (groups.some((group) => group.name.toLowerCase() === name.toLowerCase())) { setNotice('分组已存在'); return; }
+    if (groups.some((group) => group.groupId !== editingGroup?.groupId && group.name.toLowerCase() === name.toLowerCase())) { setNotice('分组已存在'); return; }
     setSaving(true);
     try {
-      const response = await fetch('/api/groups', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+      const response = await fetch('/api/groups', { method: editingGroup ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editingGroup ? { groupId: editingGroup.groupId, name } : { name }) });
       const payload = await response.json() as { group?: GroupRecord; error?: string };
-      if (!response.ok || !payload.group) throw new Error(payload.error ?? '创建失败');
-      setGroups((current) => [...current, payload.group as GroupRecord].sort((a, b) => String(a.name ?? '').localeCompare(String(b.name ?? ''), 'zh-CN')));
+      if (!response.ok || !payload.group) throw new Error(payload.error ?? (editingGroup ? '修改失败' : '创建失败'));
+      setGroups((current) => editingGroup ? current.map((group) => group.groupId === editingGroup.groupId ? payload.group as GroupRecord : group) : [...current, payload.group as GroupRecord]);
       setSelectedGroup(payload.group.groupId);
       setGroupName('');
+      setEditingGroup(null);
       setShowAddGroup(false);
-      setNotice(`${name} 已创建`);
+      setNotice(editingGroup ? `分组已重命名为 ${name}` : `${name} 已创建`);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : '创建失败');
+      setNotice(error instanceof Error ? error.message : (editingGroup ? '修改失败' : '创建失败'));
     } finally { setSaving(false); }
   }
 
@@ -328,20 +330,22 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
 
   function groupCount(groupId: string) { return accounts.filter((account) => groupId === 'ungrouped' ? !account.groupId : account.groupId === groupId).length; }
   function groupNameFor(groupId: string) { return groups.find((group) => group.groupId === groupId)?.name ?? '未分组'; }
+  function openGroupDialog(group?: GroupRecord) { setEditingGroup(group ?? null); setGroupName(group?.name ?? ''); setShowAddGroup(true); }
+  function closeGroupDialog() { setShowAddGroup(false); setEditingGroup(null); setGroupName(''); }
 
   return (
     <main className="console-shell">
       <header className="console-header">
         <a className="console-brand" href="#top"><span>N</span><strong>NEXUS</strong><small>AWS 账号管理</small></a>
         <div className="header-search"><span>⌕</span><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、账号 ID、区域" /><kbd>/</kbd></div>
-        <div className="header-actions"><span className="current-user">{userName}</span><button className="icon-button" onClick={() => void loadData()} aria-label="刷新" title="刷新">↻</button>{isAdmin && <SupportBillingPanel onNotice={setNotice} />}{isAdmin && <OuAutomationPanel ref={ouAutomationRef} onNotice={setNotice} />}{isAdmin && <button className="permission-button" onClick={() => void openPermissions()}>权限设置</button>}{isAdmin && <button className="add-button" onClick={() => setShowAdd(true)}><span>+</span> 添加账号</button>}</div>
+        <div className="header-actions"><span className="current-user">{userName}</span><button className="icon-button" onClick={() => void loadData()} aria-label="刷新" title="刷新">↻</button>{isAdmin && <SupportBillingPanel onNotice={setNotice} />}{isAdmin && <OuAutomationPanel ref={ouAutomationRef} onNotice={setNotice} />}{isAdmin && <a className="permission-button" href="/apn-monitor" style={{ textDecoration: 'none' }}>APN 监控</a>}{isAdmin && <button className="permission-button" onClick={() => void openPermissions()}>权限设置</button>}{isAdmin && <button className="add-button" onClick={() => setShowAdd(true)}><span>+</span> 添加账号</button>}</div>
       </header>
 
       <div className="platform-layout" id="top">
         <aside className="group-sidebar">
-          <div className="sidebar-title"><h2>账号分组</h2>{isAdmin && <button onClick={() => setShowAddGroup(true)} aria-label="添加分组">+</button>}</div>
+          <div className="sidebar-title"><h2>账号分组</h2>{isAdmin && <button onClick={() => openGroupDialog()} aria-label="添加分组">+</button>}</div>
           <nav className="group-list">
-            {orderedGroups.map((group) => <button key={group.groupId} className={selectedGroup === group.groupId ? 'active' : ''} onClick={() => setSelectedGroup(group.groupId)} onDragOver={(event) => { if (isAdmin) event.preventDefault(); }} onDrop={(event) => { if (!isAdmin) return; event.preventDefault(); const accountId = event.dataTransfer.getData('text/account-id'); if (accountId) void changeGroup(accountId, group.groupId); }}><span><i className="folder" />{group.name}</span><b>{groupCount(group.groupId)}</b></button>)}
+            {orderedGroups.map((group) => <div className="group-list-item" key={group.groupId}><button className={`group-select ${selectedGroup === group.groupId ? 'active' : ''}`} onClick={() => setSelectedGroup(group.groupId)} onDragOver={(event) => { if (isAdmin) event.preventDefault(); }} onDrop={(event) => { if (!isAdmin) return; event.preventDefault(); const accountId = event.dataTransfer.getData('text/account-id'); if (accountId) void changeGroup(accountId, group.groupId); }}><span><i className="folder" />{group.name}</span><b>{groupCount(group.groupId)}</b></button>{isAdmin && <button className="group-edit" aria-label={`编辑 ${group.name}`} title="编辑分组名称" onClick={() => openGroupDialog(group)}>✎</button>}</div>)}
             {(isAdmin || accounts.some((account) => !account.groupId)) && <button className={selectedGroup === 'ungrouped' ? 'active' : ''} onClick={() => setSelectedGroup('ungrouped')} onDragOver={(event) => { if (isAdmin) event.preventDefault(); }} onDrop={(event) => { if (!isAdmin) return; event.preventDefault(); const accountId = event.dataTransfer.getData('text/account-id'); if (accountId) void changeGroup(accountId, ''); }}><span><i className="folder empty" />未分组</span><b>{groupCount('ungrouped')}</b></button>}
           </nav>
         </aside>
@@ -369,7 +373,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
         </section>
       </div>
 
-      {showAddGroup && <div className="dialog-layer" onMouseDown={(event) => event.target === event.currentTarget && setShowAddGroup(false)}><section className="group-dialog" role="dialog" aria-modal="true"><button className="dialog-close" onClick={() => setShowAddGroup(false)}>×</button><h2>新建分组</h2><form onSubmit={(event) => void addGroup(event)}><label><span>分组名称</span><input autoFocus value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="例如：新代付组" maxLength={50} /></label><div className="dialog-actions"><button type="button" className="cancel" onClick={() => setShowAddGroup(false)}>取消</button><button className="save" disabled={saving || !groupName.trim()}>{saving ? '创建中...' : '创建'}</button></div></form></section></div>}
+      {showAddGroup && <div className="dialog-layer" onMouseDown={(event) => event.target === event.currentTarget && closeGroupDialog()}><section className="group-dialog" role="dialog" aria-modal="true"><button className="dialog-close" onClick={() => closeGroupDialog()}>×</button><h2>{editingGroup ? '编辑分组' : '新建分组'}</h2><form onSubmit={(event) => void addGroup(event)}><label><span>分组名称</span><input autoFocus value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="例如：新代付组" maxLength={50} /></label><div className="dialog-actions"><button type="button" className="cancel" onClick={() => closeGroupDialog()}>取消</button><button className="save" disabled={saving || !groupName.trim()}>{saving ? '保存中...' : editingGroup ? '保存修改' : '创建'}</button></div></form></section></div>}
 
       {showPermissions && <div className="dialog-layer" onMouseDown={(event) => event.target === event.currentTarget && setShowPermissions(false)}><section className="permission-dialog" role="dialog" aria-modal="true"><button className="dialog-close" onClick={() => setShowPermissions(false)}>×</button><div className="permission-heading"><span>ACCESS CONTROL</span><h2>分组权限</h2><p>勾选用户可以查看和进入的账号分组</p></div><div className="permission-tools"><span>ITSM 用户 {permissionUsers.length}</span><input value={permissionQuery} onChange={(event) => setPermissionQuery(event.target.value)} placeholder="搜索用户" /></div>{permissionUsers.length === 0 ? <div className="permission-empty">ITSM 中暂无启用用户</div> : <div className="permission-matrix-scroll"><table className="permission-matrix"><thead><tr><th>用户</th><th>未分组</th>{groups.map((group) => <th key={group.groupId}>{group.name}</th>)}<th>快捷操作</th></tr></thead><tbody>{permissionUsers.filter((item) => !permissionQuery.trim() || item.userName.toLowerCase().includes(permissionQuery.trim().toLowerCase())).map((item) => { const isSuperAdministrator = item.role === 'super_admin'; const isAdministrator = item.role === 'admin'; const canEdit = !isSuperAdministrator && (!isAdministrator || userRole === 'super_admin'); const allGroupIds = ['__ungrouped', ...groups.map((group) => group.groupId)]; const effectiveGroupIds = isSuperAdministrator || (isAdministrator && !item.configured) ? allGroupIds : item.groupIds; const allSelected = allGroupIds.every((groupId) => effectiveGroupIds.includes(groupId)); return <tr key={item.userId} className={`${isAdministrator || isSuperAdministrator ? 'administrator' : ''} ${dirtyPermissionUsers.includes(item.userId) ? 'changed' : ''}`}><th><span>{item.userName.slice(0, 1).toUpperCase()}</span><div><strong>{item.userName}</strong><small>{isSuperAdministrator ? '超级管理员 · 全部分组' : isAdministrator ? `管理员 · ${effectiveGroupIds.length} 个分组` : `${effectiveGroupIds.length} 个分组`}</small></div></th><td><input aria-label={`${item.userName} 未分组`} type="checkbox" disabled={!canEdit} checked={effectiveGroupIds.includes('__ungrouped')} onChange={() => updateUserGroups(item.userId, effectiveGroupIds.includes('__ungrouped') ? effectiveGroupIds.filter((value) => value !== '__ungrouped') : [...effectiveGroupIds, '__ungrouped'])} /></td>{groups.map((group) => <td key={group.groupId}><input aria-label={`${item.userName} ${group.name}`} type="checkbox" disabled={!canEdit} checked={effectiveGroupIds.includes(group.groupId)} onChange={() => updateUserGroups(item.userId, effectiveGroupIds.includes(group.groupId) ? effectiveGroupIds.filter((value) => value !== group.groupId) : [...effectiveGroupIds, group.groupId])} /></td>)}<td><button disabled={!canEdit} onClick={() => updateUserGroups(item.userId, allSelected ? [] : allGroupIds)}>{isSuperAdministrator ? '全部权限' : !canEdit ? '仅超级管理员' : allSelected ? '清空' : '全部'}</button></td></tr>; })}</tbody></table></div>}<div className="permission-footer"><span>{dirtyPermissionUsers.length > 0 ? `${dirtyPermissionUsers.length} 位用户待保存` : '权限已同步'}</span><div><button className="cancel" onClick={() => setShowPermissions(false)}>关闭</button><button className="save" disabled={saving || dirtyPermissionUsers.length === 0} onClick={() => void saveUserPermissions()}>{saving ? '保存中...' : '保存权限'}</button></div></div></section></div>}
 
@@ -483,11 +487,13 @@ aws iam attach-role-policy --role-name TontianOperationsRole --policy-arn arn:aw
 aws iam attach-role-policy --role-name TontianOperationsRole --policy-arn arn:aws:iam::aws:policy/AWSBillingReadOnlyAccess
 aws iam attach-role-policy --role-name TontianOperationsRole --policy-arn arn:aws:iam::aws:policy/AWSAccountManagementReadOnlyAccess
 aws iam attach-role-policy --role-name TontianOperationsRole --policy-arn arn:aws:iam::aws:policy/AWSCloudShellFullAccess
+aws iam attach-role-policy --role-name TontianOperationsRole --policy-arn arn:aws:iam::aws:policy/AWSPartnerCentralFullAccess
 cat >/tmp/tontian-organization-operations.json <<'EOF_ORG'
 {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["organizations:MoveAccount","organizations:InviteAccountToOrganization"],"Resource":"*"}]}
 EOF_ORG
 aws iam put-role-policy --role-name TontianOperationsRole --policy-name TontianOrganizationOperations --policy-document file:///tmp/tontian-organization-operations.json
 aws iam attach-role-policy --role-name TontianAdminRole --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
+aws iam attach-role-policy --role-name TontianAdminRole --policy-arn arn:aws:iam::aws:policy/AWSPartnerCentralFullAccess
 	${organizationFeatures}
 	${SUPPORT_BILLING_PROVISION_FRAGMENT}
 	echo "账号接入完成：$CURRENT_ACCOUNT_ID"`;const bytes=new TextEncoder().encode(script);let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);const encoded=btoa(binary);return `printf '%s' '${encoded}' | base64 -d > /tmp/tontian-account-setup.sh && bash /tmp/tontian-account-setup.sh`;}
