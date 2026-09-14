@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import styles from './mfa-recovery.module.css';
+import { CENTRALIZED_ROOT_ACCESS_SETUP_COMMAND } from './mfa-recovery-provision';
 
 type Preflight = { rootAccess: { trustedAccessEnabled: boolean; rootSessionsEnabled: boolean; rootCredentialsManagementEnabled: boolean } };
 
@@ -20,6 +21,15 @@ export function MfaRecoveryPanel({ payerAccountId, autoCheck, onAutoCheckComplet
 
   function rootReady(value: Preflight) {
     return value.rootAccess.trustedAccessEnabled && value.rootAccess.rootSessionsEnabled && value.rootAccess.rootCredentialsManagementEnabled;
+  }
+
+  async function copySetupCommand() {
+    try {
+      await navigator.clipboard.writeText(CENTRALIZED_ROOT_ACCESS_SETUP_COMMAND);
+      onNotice('CloudShell 命令已复制');
+    } catch {
+      onNotice('复制失败，请手动选择命令');
+    }
   }
 
   async function checkPayer(showReady = false) {
@@ -47,6 +57,6 @@ export function MfaRecoveryPanel({ payerAccountId, autoCheck, onAutoCheckComplet
   }, [autoCheck, payerAccountId]);
 
   return open && <div className={styles.layer}><section className={styles.dialog} role="dialog" aria-modal="true"><button className={styles.close} disabled={busy} onClick={() => setOpen(false)}>×</button>
-    <span>ROOT ACCESS</span><h3>启用集中式根访问</h3><p>请在当前代付账号的 AWS 控制台完成一次设置。</p><div className={styles.status}><i data-ready={preflight?.rootAccess.trustedAccessEnabled}>IAM 可信访问</i><i data-ready={preflight?.rootAccess.rootCredentialsManagementEnabled}>根凭证管理</i><i data-ready={preflight?.rootAccess.rootSessionsEnabled}>成员账号特权操作</i></div><ol><li>打开 IAM → 根访问权限管理。</li><li>点击“启用”。</li><li>同时开启“根凭证管理”和“成员账号特权根操作”。</li></ol>{error && <em>{error}</em>}<footer><button disabled={busy} onClick={() => setOpen(false)}>关闭</button><button className={styles.primary} disabled={busy} onClick={() => void checkPayer(true)}>{busy ? '检测中...' : '重新检测'}</button></footer>
+    <span>ROOT ACCESS</span><h3>启用集中式根访问</h3><p>在当前代付账号打开 CloudShell，复制并运行下面的命令。已开启的功能会自动跳过。</p><div className={styles.status}><i data-ready={preflight?.rootAccess.trustedAccessEnabled}>IAM 可信访问</i><i data-ready={preflight?.rootAccess.rootCredentialsManagementEnabled}>根凭证管理</i><i data-ready={preflight?.rootAccess.rootSessionsEnabled}>成员账号特权操作</i></div><div className={styles.command}><pre><code>{CENTRALIZED_ROOT_ACCESS_SETUP_COMMAND}</code></pre><button type="button" onClick={() => void copySetupCommand()}>复制 CloudShell 命令</button></div><p className={styles.hint}>执行完成后回到这里点击“重新检测”。</p>{error && <em>{error}</em>}<footer><button disabled={busy} onClick={() => setOpen(false)}>关闭</button><button className={styles.primary} disabled={busy} onClick={() => void checkPayer(true)}>{busy ? '检测中...' : '重新检测'}</button></footer>
   </section></div>;
 }
