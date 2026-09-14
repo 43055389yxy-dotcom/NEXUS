@@ -703,7 +703,7 @@ async function sendDailySupportSyncNotification(results) {
   const failureLines = payerFailures.slice(0, 10).map((item) => `${notificationText(item.payerName || item.accountId)}（${item.accountId}）：${notificationText(item.error)}`);
   if (payerFailures.length > failureLines.length) failureLines.push(`另有 ${payerFailures.length - failureLines.length} 个代付账号失败，请在网页查看`);
   const content = [
-    `**Support+ 每日同步汇总**`,
+    `**Support+ 自动同步汇总**`,
     `代付账号 ${results.length}｜执行 ${executed.length}｜跳过 ${results.length - executed.length}｜整组失败 ${payerFailures.length}`,
     `成员账号 ${totals.accounts}｜新增 ${totals.created}｜更新 ${totals.updated}｜周期修正 ${totals.repaired}｜处理失败 ${totals.failed}`,
     `同步 ${moneyString(totals.syncedAmount)}｜自动｜${time}`,
