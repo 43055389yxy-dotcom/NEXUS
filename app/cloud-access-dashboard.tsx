@@ -16,6 +16,16 @@ type GroupRecord = { groupId: string; name: string };
 type ManagedAccount = CloudAccount & { groupId: string; accountType: AccountType; billingAccessConfirmedAt: string; billingAccessReminderRequired: boolean };
 type NewAccount = { remark: string; accountId: string; region: string; groupId: string; accountType: AccountType };
 type PermissionUser = { userId: string; userName: string; role: string; groupIds: string[]; configured?: boolean };
+
+function cmaSectionName(name: string) {
+  return name.trim().match(/^(P\d+)(?:-|$)/i)?.[1].toUpperCase() ?? '其他';
+}
+
+function compareCmaSections(left: string, right: string) {
+  if (left === '其他') return 1;
+  if (right === '其他') return -1;
+  return Number(left.slice(1)) - Number(right.slice(1));
+}
 const OPS_ACCOUNT_ID = '590184009438';
 const regions = ['us-east-1', 'us-west-2', 'ap-southeast-1', 'ap-northeast-1', 'eu-west-1'];
 const GROUP_DISPLAY_ORDER = ['老代付组', 'PMA', '技术账号', 'VPN'];
@@ -55,6 +65,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
   const [notice, setNotice] = useState('');
   const [newAccount, setNewAccount] = useState<NewAccount>({ remark: '', accountId: '', region: 'us-east-1', groupId: '', accountType: '' });
   const [pmaAccountType, setPmaAccountType] = useState<'pma' | 'cma'>('cma');
+  const [cmaSection, setCmaSection] = useState('');
   const searchRef = useRef<HTMLInputElement>(null);
   const ouAutomationRef = useRef<OuAutomationHandle>(null);
   const promptedBillingAccess = useRef(new Set<string>());
@@ -151,9 +162,14 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
       .sort((a, b) => String(a.name ?? a.id ?? '').localeCompare(String(b.name ?? b.id ?? ''), 'zh-CN'));
   }, [accounts, query, selectedGroup]);
 
-  const displayedAccounts = useMemo(() => groupNameFor(selectedGroup) === 'PMA'
-    ? visibleAccounts.filter((account) => (account.accountType || 'cma') === pmaAccountType)
-    : visibleAccounts, [visibleAccounts, selectedGroup, pmaAccountType, groups]);
+  const cmaAccounts = useMemo(() => visibleAccounts.filter((account) => (account.accountType || 'cma') === 'cma'), [visibleAccounts]);
+  const cmaSections = useMemo(() => [...new Set(cmaAccounts.map((account) => cmaSectionName(account.name)))].sort(compareCmaSections), [cmaAccounts]);
+  const activeCmaSection = cmaSections.includes(cmaSection) ? cmaSection : (cmaSections[0] ?? '');
+  const displayedAccounts = useMemo(() => {
+    if (groupNameFor(selectedGroup) !== 'PMA') return visibleAccounts;
+    if (pmaAccountType === 'pma') return visibleAccounts.filter((account) => account.accountType === 'pma');
+    return cmaAccounts.filter((account) => cmaSectionName(account.name) === activeCmaSection);
+  }, [visibleAccounts, selectedGroup, pmaAccountType, groups, cmaAccounts, activeCmaSection]);
 
   const orderedGroups = useMemo(() => [...groups].sort((left, right) => {
     const leftIndex = GROUP_DISPLAY_ORDER.indexOf(left.name);
@@ -338,7 +354,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
           {loading && <div className="accounts-layout">{[0,1,2,3].map((item) => <div className="account-tile loading-tile" key={item} />)}</div>}
           {!loading && loadError && <div className="inline-state error"><span>!</span><strong>{loadError}</strong><button onClick={() => void loadData()}>重试</button></div>}
           {!loading && !loadError && (<>
-          {groupNameFor(selectedGroup) === 'PMA' && <div className="pma-account-tabs" role="tablist" aria-label="PMA 架构账号类型"><button type="button" className={pmaAccountType === 'cma' ? 'active' : ''} onClick={() => setPmaAccountType('cma')}>CMA账号 <b>{visibleAccounts.filter((account) => (account.accountType || 'cma') === 'cma').length}</b></button><button type="button" className={pmaAccountType === 'pma' ? 'active' : ''} onClick={() => setPmaAccountType('pma')}>PMA账号 <b>{visibleAccounts.filter((account) => account.accountType === 'pma').length}</b></button></div>}
+          {groupNameFor(selectedGroup) === 'PMA' && <div className="pma-account-filters"><div className="pma-account-tabs" role="tablist" aria-label="PMA 架构账号类型"><button type="button" className={pmaAccountType === 'cma' ? 'active' : ''} onClick={() => setPmaAccountType('cma')}>CMA账号 <b>{cmaAccounts.length}</b></button><button type="button" className={pmaAccountType === 'pma' ? 'active' : ''} onClick={() => setPmaAccountType('pma')}>PMA账号 <b>{visibleAccounts.filter((account) => account.accountType === 'pma').length}</b></button></div>{pmaAccountType === 'cma' && cmaSections.length > 0 && <div className="cma-account-tabs" role="tablist" aria-label="CMA 账号分组">{cmaSections.map((section) => <button type="button" key={section} className={activeCmaSection === section ? 'active' : ''} onClick={() => setCmaSection(section)}>{section}<b>{cmaAccounts.filter((account) => cmaSectionName(account.name) === section).length}</b></button>)}</div>}</div>}
           <div className="accounts-layout">
               {displayedAccounts.map((account, index) => (
                 <article className="account-tile clickable note-only" key={account.id} style={{ animationDelay: `${index * 55}ms` }} onClick={() => launchConsole(account)} onKeyDown={(event) => { if (event.key === 'Enter') launchConsole(account); }} onDragStart={(event) => { if (!isAdmin) return; event.dataTransfer.setData('text/account-id', account.id); event.dataTransfer.effectAllowed = 'move'; }} draggable={isAdmin} role="button" tabIndex={0} aria-label={`进入 ${account.name} AWS 控制台`} title={isAdmin ? '点击进入 AWS，拖动可调整分组' : '点击进入 AWS'}>
