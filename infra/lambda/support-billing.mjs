@@ -704,7 +704,7 @@ async function sendDailySupportSyncNotification(results) {
   if (payerFailures.length > failureLines.length) failureLines.push(`另有 ${payerFailures.length - failureLines.length} 个代付账号失败，请在网页查看`);
   const content = [
     `**Support+ 自动同步汇总**`,
-    `代付账号 ${results.length}｜执行 ${executed.length}｜跳过 ${results.length - executed.length}｜整组失败 ${payerFailures.length}`,
+    `代付账号 ${results.length}｜执行 ${executed.length}｜整组失败 ${payerFailures.length}`,
     `成员账号 ${totals.accounts}｜新增 ${totals.created}｜更新 ${totals.updated}｜周期修正 ${totals.repaired}｜处理失败 ${totals.failed}`,
     `同步 ${moneyString(totals.syncedAmount)}｜自动｜${time}`,
     ...failureLines,
@@ -769,18 +769,11 @@ async function deleteAction(payer, periodKey, targets, persist = saveSnapshot) {
   return { summary, snapshot };
 }
 
-function automaticDue(payer) {
-  if (!payer.lastAutoSyncAt) return true;
-  const last = new Date(payer.lastAutoSyncAt); const elapsed = Math.floor((Date.now() - last.getTime()) / 86400000);
-  return !Number.isFinite(last.getTime()) || elapsed >= 2;
-}
-
 export function isSupportBillingScheduledEvent(event) { return event?.task === "support-billing"; }
 
 export async function runScheduledSupportBilling() {
   const payers = await listPayers(); const results = [];
   for (const payer of payers) {
-    if (!automaticDue(payer)) { results.push({ accountId: payer.accountId, payerName: payer.remark, skipped: true }); continue; }
     try {
       const value = await syncAction(payer, "current", null, true, saveSnapshot, false);
       results.push({ accountId: payer.accountId, payerName: payer.remark, accounts: value.snapshot.accounts.length, ...value.summary });
