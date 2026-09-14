@@ -14,6 +14,9 @@ type Payer = { accountId: string; remark: string; groupName: string; architectur
 type ConfirmAction = 'sync' | 'delete';
 type RowFilter = 'all' | 'pending' | 'blocked' | 'synced' | 'enabled';
 type PayerState = 'pending' | 'abnormal' | 'unscanned' | 'normal';
+type BillingRow = BillingAccount & { payerId: string; payerRemark: string; payerInfo?: Payer };
+
+const ALL_PAYERS_ID = '__all_payers__';
 
 const statusText: Record<Status, string> = {
   normal: '金额一致', create: '待创建', update: '待更新', native_visible: '原生可见', query_error: '处理失败', data_pending: '数据待更新', zero_risk: '疑似清零', mapping_error: '映射异常', mapping_ignored: '已通过', duplicate_cli: '重复账单', period_range_error: '周期待修正', manual_deleted: '已人工删除',
@@ -60,6 +63,7 @@ export function SupportBillingPanel({ onNotice }: { onNotice: (message: string) 
   const [payerQuery, setPayerQuery] = useState('');
   const [selectedPayerId, setSelectedPayerId] = useState('');
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [allSnapshots, setAllSnapshots] = useState<Record<string, Snapshot>>({});
   const cacheRef = useRef<SupportBillingCache<Snapshot> | null>(null);
   const selectedPayerRef = useRef('');
   const selectionVersion = useRef(0);
@@ -123,6 +127,9 @@ export function SupportBillingPanel({ onNotice }: { onNotice: (message: string) 
             setSnapshot(value.snapshot);
             setPreview(Boolean(value.preview));
           }
+          if (openRef.current && selectedPayerRef.current === ALL_PAYERS_ID && historicalMonthFor(periodRef.current) === historyMonth) {
+            setAllSnapshots((current) => ({ ...current, [accountId]: value.snapshot }));
+          }
         });
         cacheRef.current = cache;
       }
@@ -180,6 +187,43 @@ export function SupportBillingPanel({ onNotice }: { onNotice: (message: string) 
     } finally { if (openRef.current && version === selectionVersion.current) setLoadingPayerId(''); }
   }
 
+  async function selectAllPayers(nextPeriod: SelectedPeriod = periodRef.current) {
+    const cache = cacheRef.current;
+    if (!cache || mutationRef.current || payers.length === 0) return;
+    if (!billingPeriodOptions().some((option) => option.value === nextPeriod)) nextPeriod = 'current';
+    const version = ++selectionVersion.current;
+    const historyMonth = historicalMonthFor(nextPeriod);
+    periodRef.current = nextPeriod;
+    selectedPayerRef.current = ALL_PAYERS_ID;
+    setSelectedPayerId(ALL_PAYERS_ID);
+    setPeriod(nextPeriod);
+    setSnapshot(null);
+    setSelected([]);
+    setRowFilter('all');
+    setConfirm(null);
+    setLoadError('');
+    setLoadingPayerId(ALL_PAYERS_ID);
+    try {
+      const loaded = await Promise.allSettled(payers.map(async (item) => ({ accountId: item.accountId, value: await cache.load(item.accountId, false, historyMonth) })));
+      if (!openRef.current || version !== selectionVersion.current) return;
+      const next: Record<string, Snapshot> = {};
+      let previewMode = false;
+      let failures = 0;
+      for (const item of loaded) {
+        if (item.status === 'rejected') { failures += 1; continue; }
+        next[item.value.accountId] = item.value.value.snapshot;
+        previewMode ||= Boolean(item.value.value.preview);
+      }
+      setAllSnapshots(next);
+      setPreview(previewMode);
+      if (failures) setLoadError(`${failures} 个代付账号读取失败，已显示其余账号的缓存结果。`);
+    } catch (error) {
+      if (!openRef.current || version !== selectionVersion.current) return;
+      const message = error instanceof Error ? error.message : '读取全部代付失败';
+      setLoadError(message); onNotice(message);
+    } finally { if (openRef.current && version === selectionVersion.current) setLoadingPayerId(''); }
+  }
+
   async function scan() {
     const cache = cacheRef.current;
     const accountId = selectedPayerRef.current;
@@ -187,6 +231,26 @@ export function SupportBillingPanel({ onNotice }: { onNotice: (message: string) 
     const version = ++selectionVersion.current;
     setLoadingPayerId(accountId); setLoadError('');
     try {
+      if (accountId === ALL_PAYERS_ID) {
+        const historyMonth = historicalMonthFor(periodRef.current);
+        const next = { ...allSnapshots };
+        let accounts = 0;
+        let failures = 0;
+        for (const item of payers) {
+          if (!openRef.current || version !== selectionVersion.current) return;
+          try {
+            const value = await cache.load(item.accountId, true, historyMonth);
+            next[item.accountId] = value.snapshot;
+            accounts += value.snapshot.accounts.length;
+            setAllSnapshots({ ...next });
+          } catch { failures += 1; }
+        }
+        if (!openRef.current || version !== selectionVersion.current) return;
+        setAllSnapshots(next);
+        if (failures) setLoadError(`${failures} 个代付账号扫描失败，其他结果已更新。`);
+        onNotice(`全部扫描完成：成员账号 ${accounts}，失败代付 ${failures}`);
+        return;
+      }
       const value = await cache.load(accountId, true, historicalMonthFor(periodRef.current));
       if (!openRef.current || version !== selectionVersion.current) return;
       setSnapshot(value.snapshot);
@@ -253,6 +317,7 @@ export function SupportBillingPanel({ onNotice }: { onNotice: (message: string) 
   }
 
   const payer = payers.find((item) => item.accountId === selectedPayerId);
+  const isAllPayers = selectedPayerId === ALL_PAYERS_ID;
   const periodOptions = billingPeriodOptions();
   const historicalMonth = historicalMonthFor(period);
   const readOnlyPeriod = Boolean(historicalMonth);
@@ -264,9 +329,15 @@ export function SupportBillingPanel({ onNotice }: { onNotice: (message: string) 
   const isPending = (item: BillingPeriod) => safeToSync(item.status);
   const isBlocked = (item: BillingPeriod) => risky(item.status) && !safeToSync(item.status);
   const isSynced = (item: BillingPeriod) => item.status === 'normal' && Boolean(item.customLineItemArn);
-  const rows = (snapshot?.accounts ?? [])
+  const sourceRows: BillingRow[] = isAllPayers
+    ? Object.entries(allSnapshots).flatMap(([payerId, value]) => {
+        const payerInfo = payers.find((item) => item.accountId === payerId);
+        return value.accounts.map((account) => ({ ...account, payerId, payerRemark: payerInfo?.remark ?? payerId, payerInfo }));
+      })
+    : (snapshot?.accounts ?? []).map((account) => ({ ...account, payerId: selectedPayerId, payerRemark: payer?.remark ?? selectedPayerId, payerInfo: payer }));
+  const rows = sourceRows
     .filter((account) => !needle || `${account.name} ${account.id} ${account.cma}`.toLocaleLowerCase('zh-CN').includes(needle))
-    .filter((account) => { const item = periodItem(account); return rowFilter === 'all' || (rowFilter === 'pending' && isPending(item)) || (rowFilter === 'blocked' && isBlocked(item)) || (rowFilter === 'synced' && isSynced(item)) || (rowFilter === 'enabled' && accountAutoSyncEnabled(account, payer)); })
+    .filter((account) => { const item = periodItem(account); return rowFilter === 'all' || (rowFilter === 'pending' && isPending(item)) || (rowFilter === 'blocked' && isBlocked(item)) || (rowFilter === 'synced' && isSynced(item)) || (rowFilter === 'enabled' && accountAutoSyncEnabled(account, account.payerInfo)); })
     .sort((left, right) => {
       const leftItem = periodItem(left);
       const rightItem = periodItem(right);
@@ -274,18 +345,21 @@ export function SupportBillingPanel({ onNotice }: { onNotice: (message: string) 
       return chargePriority || rowPriority(leftItem) - rowPriority(rightItem) || left.name.localeCompare(right.name, 'zh-CN');
     });
   const selectedRows = rows.filter((account) => selected.includes(account.id));
-  const selectableRows = rows.filter((account) => !readOnlyPeriod && safeToSync(periodItem(account).status));
+  const selectableRows = rows.filter((account) => !isAllPayers && !readOnlyPeriod && safeToSync(periodItem(account).status));
   const allSelectableSelected = selectableRows.length > 0 && selectableRows.every((account) => selected.includes(account.id));
   const syncable = !readOnlyPeriod && selectedRows.length > 0 && selectedRows.every((account) => safeToSync(periodItem(account).status));
   const deletable = !readOnlyPeriod && selectedRows.length > 0 && selectedRows.every((account) => canDelete(account, recentPeriod, billingMonth));
   const summary = useMemo(() => {
-    const values = (snapshot?.accounts ?? []).map(periodItem);
-    return { pending: values.filter(isPending).length, blocked: values.filter(isBlocked).length, synced: values.filter(isSynced).length, enabled: (snapshot?.accounts ?? []).filter((account) => accountAutoSyncEnabled(account, payer)).length };
-  }, [snapshot, period, payer]);
+    const values = sourceRows.map(periodItem);
+    return { pending: values.filter(isPending).length, blocked: values.filter(isBlocked).length, synced: values.filter(isSynced).length, enabled: sourceRows.filter((account) => accountAutoSyncEnabled(account, account.payerInfo)).length };
+  }, [sourceRows, period]);
   const payerNeedle = payerQuery.trim().toLocaleLowerCase('zh-CN');
   const visiblePayers = payers
     .filter((item) => !payerNeedle || `${item.remark} ${item.accountId} ${item.groupName} ${item.lastMessage}`.toLocaleLowerCase('zh-CN').includes(payerNeedle))
     .sort((left, right) => payerStatePriority(payerState(left)) - payerStatePriority(payerState(right)) || left.remark.localeCompare(right.remark, 'zh-CN'));
+  const allPayerState: PayerState = payers.some((item) => payerState(item) === 'abnormal') ? 'abnormal' : payers.some((item) => payerState(item) === 'pending') ? 'pending' : payers.some((item) => payerState(item) === 'unscanned') ? 'unscanned' : 'normal';
+  const allAttentionCount = payers.reduce((total, item) => total + item.pendingCount + item.blockedCount, 0);
+  const allLastScanAt = Object.values(allSnapshots).map((item) => item.lastScanAt).filter(Boolean).sort().at(-1);
 
   return <>
     <button className={styles.trigger} onClick={() => void showPanel()}>Support 对账</button>
@@ -293,15 +367,16 @@ export function SupportBillingPanel({ onNotice }: { onNotice: (message: string) 
       <section className={styles.dialog} role="dialog" aria-modal="true">
         <button className={styles.close} disabled={mutating} onClick={closePanel}>×</button>
         <header className={styles.heading}><span>BILLING CONTROL</span><h2>Business Support+ 对账</h2><p>{preview ? '本地预览，不执行 AWS 操作' : '自动核对费用，只处理通过安全校验的账单项'}</p></header>
-        <div className={styles.toolbar}><div><b>{payer?.remark ?? '选择代付账号'}</b><small>{snapshot?.lastScanAt ? `最后扫描 ${formatTime(snapshot.lastScanAt)}${loadingPayerId === selectedPayerId ? ' · 正在更新' : ''}` : busy ? '正在读取账单...' : '尚未扫描'}</small></div><nav aria-label="选择账期">{periodOptions.map((option) => <button key={option.value} disabled={mutating || loadingList || !selectedPayerId} title={option.month} aria-pressed={period === option.value} className={period === option.value ? styles.active : ''} onClick={() => void selectPayer(selectedPayerId, option.value)}>{option.label}</button>)}</nav><button disabled={busy || preview || !selectedPayerId} onClick={() => void scan()}>{busy ? '处理中...' : '重新扫描'}</button></div>
+        <div className={styles.toolbar}><div><b>{isAllPayers ? '全部代付' : payer?.remark ?? '选择代付账号'}</b><small>{isAllPayers ? (allLastScanAt ? `汇总 ${payers.length} 个代付 · 最近扫描 ${formatTime(allLastScanAt)}${busy ? ' · 正在更新' : ''}` : busy ? '正在读取全部代付...' : '尚未读取') : snapshot?.lastScanAt ? `最后扫描 ${formatTime(snapshot.lastScanAt)}${loadingPayerId === selectedPayerId ? ' · 正在更新' : ''}` : busy ? '正在读取账单...' : '尚未扫描'}</small></div><nav aria-label="选择账期">{periodOptions.map((option) => <button key={option.value} disabled={mutating || loadingList || !selectedPayerId} title={option.month} aria-pressed={period === option.value} className={period === option.value ? styles.active : ''} onClick={() => void (isAllPayers ? selectAllPayers(option.value) : selectPayer(selectedPayerId, option.value))}>{option.label}</button>)}</nav><button disabled={busy || preview || !selectedPayerId} onClick={() => void scan()}>{busy ? '处理中...' : isAllPayers ? '刷新全部代付' : '重新扫描'}</button></div>
         <div className={styles.layout}>
-          <aside className={styles.payers}><input value={payerQuery} onChange={(event) => setPayerQuery(event.target.value)} placeholder="搜索代付账号" />{visiblePayers.length === 0 ? <p>没有符合条件的代付账号</p> : visiblePayers.map((item) => { const state = payerState(item); const detail = state === 'pending' ? `${item.pendingCount} 个` : state === 'abnormal' && item.blockedCount > 0 ? `${item.blockedCount} 个` : ''; return <button key={item.accountId} disabled={mutating || loadingList} title={item.lastMessage || payerStateText[state]} className={item.accountId === selectedPayerId ? styles.selectedPayer : ''} onClick={() => void selectPayer(item.accountId)}><i>{item.remark.slice(0, 1).toUpperCase()}</i><span><strong>{item.remark}</strong><small>{item.accountId} · {item.groupName} · 成员 {item.accountCount}</small></span><em data-state={state}>{payerStateText[state]}{detail && ` ${detail}`}</em></button>; })}</aside>
+          <aside className={styles.payers}><input value={payerQuery} onChange={(event) => setPayerQuery(event.target.value)} placeholder="搜索代付账号" /><button disabled={mutating || loadingList || payers.length === 0} title="汇总查看并刷新所有代付账号" className={isAllPayers ? styles.selectedPayer : ''} onClick={() => void selectAllPayers()}><i>全</i><span><strong>全部代付</strong><small>{payers.length} 个代付 · 成员 {payers.reduce((total, item) => total + item.accountCount, 0)}</small></span><em data-state={allPayerState}>{payerStateText[allPayerState]}{allAttentionCount > 0 && ` ${allAttentionCount} 个`}</em></button>{visiblePayers.length === 0 ? <p>没有符合条件的代付账号</p> : visiblePayers.map((item) => { const state = payerState(item); const detail = state === 'pending' ? `${item.pendingCount} 个` : state === 'abnormal' && item.blockedCount > 0 ? `${item.blockedCount} 个` : ''; return <button key={item.accountId} disabled={mutating || loadingList} title={item.lastMessage || payerStateText[state]} className={item.accountId === selectedPayerId ? styles.selectedPayer : ''} onClick={() => void selectPayer(item.accountId)}><i>{item.remark.slice(0, 1).toUpperCase()}</i><span><strong>{item.remark}</strong><small>{item.accountId} · {item.groupName} · 成员 {item.accountCount}</small></span><em data-state={state}>{payerStateText[state]}{detail && ` ${detail}`}</em></button>; })}</aside>
           <main className={styles.content}>
             {loadError && <p role="alert" style={{ color: '#ff8994', fontSize: 12, overflowWrap: 'anywhere' }}>{snapshot ? '更新失败，已保留上次数据。' : '读取失败。'}{loadError}</p>}
-            <div className={styles.stats}><button className={rowFilter === 'pending' ? styles.statActive : ''} onClick={() => { setRowFilter((current) => current === 'pending' ? 'all' : 'pending'); setSelected([]); }}><b>{summary.pending}</b>待处理</button><button className={rowFilter === 'all' ? styles.statActive : ''} onClick={() => { setRowFilter('all'); setSelected([]); }}><b>{snapshot?.accounts.length ?? 0}</b>全部账号</button><button className={rowFilter === 'synced' ? styles.statActive : ''} onClick={() => { setRowFilter((current) => current === 'synced' ? 'all' : 'synced'); setSelected([]); }}><b>{summary.synced}</b>已同步</button><button className={rowFilter === 'blocked' ? styles.statActive : ''} onClick={() => { setRowFilter((current) => current === 'blocked' ? 'all' : 'blocked'); setSelected([]); }}><b>{summary.blocked}</b>已拦截</button><button className={rowFilter === 'enabled' ? styles.statActive : ''} onClick={() => { setRowFilter((current) => current === 'enabled' ? 'all' : 'enabled'); setSelected([]); }}><b>{summary.enabled}</b>自动同步开启</button><input value={memberQuery} onChange={(event) => setMemberQuery(event.target.value)} placeholder="搜索名称或账号 ID" /></div>
+            <div className={styles.stats}><button className={rowFilter === 'pending' ? styles.statActive : ''} onClick={() => { setRowFilter((current) => current === 'pending' ? 'all' : 'pending'); setSelected([]); }}><b>{summary.pending}</b>待处理</button><button className={rowFilter === 'all' ? styles.statActive : ''} onClick={() => { setRowFilter('all'); setSelected([]); }}><b>{sourceRows.length}</b>全部账号</button><button className={rowFilter === 'synced' ? styles.statActive : ''} onClick={() => { setRowFilter((current) => current === 'synced' ? 'all' : 'synced'); setSelected([]); }}><b>{summary.synced}</b>已同步</button><button className={rowFilter === 'blocked' ? styles.statActive : ''} onClick={() => { setRowFilter((current) => current === 'blocked' ? 'all' : 'blocked'); setSelected([]); }}><b>{summary.blocked}</b>已拦截</button><button className={rowFilter === 'enabled' ? styles.statActive : ''} onClick={() => { setRowFilter((current) => current === 'enabled' ? 'all' : 'enabled'); setSelected([]); }}><b>{summary.enabled}</b>自动同步开启</button><input value={memberQuery} onChange={(event) => setMemberQuery(event.target.value)} placeholder="搜索名称或账号 ID" /></div>
             <div className={styles.actions}><span aria-live="polite">{selected.length > 0 ? `已选择 ${selected.length} 个账号` : ''}</span><div><button disabled={busy || selectableRows.length === 0} onClick={() => setSelected(allSelectableSelected ? [] : selectableRows.map((account) => account.id))}>{allSelectableSelected ? '取消全选' : '一键选择'}</button><button disabled={busy || !deletable} onClick={() => setConfirm('delete')}>删除账单项</button><button className={styles.primary} disabled={busy || !syncable} onClick={() => setConfirm('sync')}>同步选中</button></div></div>
             {readOnlyPeriod && <p className={styles.readOnlyHint}>历史月份仅查看对账结果；AWS 只支持修改本月和上月账单。</p>}
-            <div className={styles.tableWrap}><table><thead><tr><th>选择</th><th>成员账号</th><th>账期</th><th>账单组 / 同步资格</th><th>自动同步</th><th>最近同步</th><th>AWS Support</th><th>当前同步</th><th>差额</th><th>状态</th></tr></thead><tbody>{busy && !snapshot ? <tr><td colSpan={10}>正在读取...</td></tr> : rows.length === 0 ? <tr><td colSpan={10}>暂无扫描结果</td></tr> : rows.map((account) => { const item = periodItem(account); const selectable = !readOnlyPeriod && (safeToSync(item.status) || canDelete(account, recentPeriod, billingMonth)); const difference = item.aws === null ? null : item.aws - (item.synced ?? 0); const autoSync = accountAutoSyncEnabled(account, payer); const lastSync = account.history?.find((entry) => entry.action !== '删除'); return <tr key={account.id} data-risk={risky(item.status)}><td><input type="checkbox" disabled={busy || !selectable} checked={selected.includes(account.id)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, account.id] : current.filter((value) => value !== account.id))} /></td><td><strong>{account.name}</strong><small>{account.id}</small></td><td className={styles.billingMonth}>{billingMonthLabel}</td><td>{billingGroupLabel(payer?.architecture, account.cma, item, readOnlyPeriod)}</td><td><button type="button" aria-pressed={autoSync} title={autoSync ? '每两天扫描时允许自动同步；人工同步始终可用' : '自动写入已关闭；扫描展示和人工同步不受影响'} className={`${styles.autoSyncToggle} ${autoSync ? styles.autoSyncOn : styles.autoSyncOff}`} disabled={busy} onClick={() => void setAccountAutoSync(account, !autoSync)}>{autoSync ? '已开启' : '已关闭'}</button></td><td className={styles.lastSync}>{lastSync ? <><time dateTime={lastSync.date}>{formatTime(lastSync.date)}</time><small>{lastSync.action}</small></> : '暂无记录'}</td><td>{money(item.aws)}</td><td>{money(item.synced)}</td><td>{difference === null ? '—' : `${difference > 0 ? '+' : ''}${money(difference)}`}</td><td><span data-status={item.status} title={item.suggestion}>{statusText[item.status] ?? item.suggestion}</span></td></tr>; })}</tbody></table></div>
+            {isAllPayers && <p className={styles.readOnlyHint}>全部代付模式用于汇总筛选和刷新；需要同步或删除时，请选择左侧对应的单个代付账号。</p>}
+            <div className={styles.tableWrap}><table><thead><tr><th>选择</th><th>成员账号</th><th>账期</th><th>账单组 / 同步资格</th><th>自动同步</th><th>最近同步</th><th>AWS Support</th><th>当前同步</th><th>差额</th><th>状态</th></tr></thead><tbody>{busy && sourceRows.length === 0 ? <tr><td colSpan={10}>正在读取...</td></tr> : rows.length === 0 ? <tr><td colSpan={10}>暂无扫描结果</td></tr> : rows.map((account) => { const item = periodItem(account); const selectable = !isAllPayers && !readOnlyPeriod && (safeToSync(item.status) || canDelete(account, recentPeriod, billingMonth)); const difference = item.aws === null ? null : item.aws - (item.synced ?? 0); const autoSync = accountAutoSyncEnabled(account, account.payerInfo); const lastSync = account.history?.find((entry) => entry.action !== '删除'); return <tr key={`${account.payerId}:${account.id}`} data-risk={risky(item.status)}><td><input type="checkbox" disabled={busy || !selectable} checked={selected.includes(account.id)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, account.id] : current.filter((value) => value !== account.id))} /></td><td><strong>{account.name}</strong><small>{account.id}{isAllPayers ? ` · ${account.payerRemark}` : ''}</small></td><td className={styles.billingMonth}>{billingMonthLabel}</td><td>{billingGroupLabel(account.payerInfo?.architecture, account.cma, item, readOnlyPeriod)}</td><td><button type="button" aria-pressed={autoSync} title={autoSync ? '每两天扫描时允许自动同步；人工同步始终可用' : '自动写入已关闭；扫描展示和人工同步不受影响'} className={`${styles.autoSyncToggle} ${autoSync ? styles.autoSyncOn : styles.autoSyncOff}`} disabled={busy || isAllPayers} onClick={() => void setAccountAutoSync(account, !autoSync)}>{autoSync ? '已开启' : '已关闭'}</button></td><td className={styles.lastSync}>{lastSync ? <><time dateTime={lastSync.date}>{formatTime(lastSync.date)}</time><small>{lastSync.action}</small></> : '暂无记录'}</td><td>{money(item.aws)}</td><td>{money(item.synced)}</td><td>{difference === null ? '—' : `${difference > 0 ? '+' : ''}${money(difference)}`}</td><td><span data-status={item.status} title={item.suggestion}>{statusText[item.status] ?? item.suggestion}</span></td></tr>; })}</tbody></table></div>
           </main>
         </div>
         {confirm && <div className={styles.confirmLayer}><section className={styles.confirm}><span>CONFIRM ACTION</span><h3>{confirm === 'delete' ? '删除账单项' : '同步 Support 费用'}</h3><p>{busy ? '正在读取 AWS 数据并修正账单周期，请不要关闭页面。' : `将处理 ${selected.length} 个成员账号。系统会重新读取 AWS 数据，通过安全校验后才会写入。`}</p><div><button disabled={busy} onClick={() => setConfirm(null)}>取消</button><button className={styles.primary} disabled={busy} onClick={() => void perform()}>{busy ? '处理中...' : '确认执行'}</button></div></section></div>}
