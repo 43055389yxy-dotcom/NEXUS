@@ -3,7 +3,7 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { type CloudAccount } from './accounts';
 import { OuAutomationPanel, type OuAutomationHandle } from './ou-automation-panel';
-import { OU_AUTOMATION_PROVISION_FRAGMENT } from './ou-automation-provision';
+import { AUTOMATION_ROLE_PROVISION_FRAGMENT, OU_AUTOMATION_PROVISION_FRAGMENT } from './ou-automation-provision';
 import { MFA_RECOVERY_PROVISION_FRAGMENT } from './mfa-recovery-provision';
 import { ADMIN_ROLE_TRUST_FRAGMENT } from './admin-role-provision';
 import { SupportBillingPanel } from './support-billing-panel';
@@ -434,7 +434,7 @@ if [ -z "$MANAGEMENT_ACCOUNT_ID" ] || [ "$MANAGEMENT_ACCOUNT_ID" = "None" ] || [
   echo "错误：当前账号不是 AWS Organization 管理账号，禁止接入"
   exit 1
 fi
-`;const organizationFeatures=accountType==='pma'?'':`${OU_AUTOMATION_PROVISION_FRAGMENT}\n${MFA_RECOVERY_PROVISION_FRAGMENT}`;const script=`set -e
+`;const organizationFeatures=accountType==='pma'?AUTOMATION_ROLE_PROVISION_FRAGMENT:`${OU_AUTOMATION_PROVISION_FRAGMENT}\n${MFA_RECOVERY_PROVISION_FRAGMENT}`;const script=`set -e
 
 export AWS_PAGER=""
 export AWS_CLI_AUTO_PROMPT=off
