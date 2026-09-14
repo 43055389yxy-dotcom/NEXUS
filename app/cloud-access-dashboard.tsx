@@ -10,7 +10,7 @@ import { SupportBillingPanel } from './support-billing-panel';
 import { SUPPORT_BILLING_PROVISION_FRAGMENT } from './support-billing-provision';
 import { BillingAccessGuide } from './billing-access-guide';
 
-type AccountType = 'pma' | 'cma' | '';
+type AccountType = 'pma' | 'cma' | 'apn' | '';
 type AccountRecord = { accountId: string; remark?: string; name?: string; region: string; groupId?: string; accountType?: AccountType; billingAccessConfirmedAt?: string; billingAccessReminderRequired?: boolean };
 type GroupRecord = { groupId: string; name: string };
 type ManagedAccount = CloudAccount & { groupId: string; accountType: AccountType; billingAccessConfirmedAt: string; billingAccessReminderRequired: boolean };
@@ -230,9 +230,12 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
       const addedAccount = toManagedAccount(payload.account as AccountRecord);
       setAccounts((current) => [...current, addedAccount]);
       setShowAdd(false);
-      promptedBillingAccess.current.add(accountId);
-      setBillingGuideAccount({ id: accountId, name: remark });
-      setNewAccount({ remark: '', accountId: '', region: 'us-east-1', groupId: selectedGroup !== 'ungrouped' ? selectedGroup : '', accountType: '' });
+      if (selectedGroupName === 'APN') setNotice(`${remark} 已添加，请使用刚才复制的 APN API 命令完成接入`);
+      else {
+        promptedBillingAccess.current.add(accountId);
+        setBillingGuideAccount({ id: accountId, name: remark });
+      }
+      setNewAccount({ remark: '', accountId: '', region: 'us-east-1', groupId: selectedGroup !== 'ungrouped' ? selectedGroup : '', accountType: selectedGroupName === 'APN' ? 'apn' : '' });
       if (selectedGroupName === '老代付组' || (selectedGroupName === 'PMA' && newAccount.accountType === 'cma')) await ouAutomationRef.current?.initializeAccount(accountId);
       else setNotice(`${remark} 已添加`);
     } catch (error) {
@@ -364,7 +367,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
                 <article className="account-tile clickable note-only" key={account.id} style={{ animationDelay: `${index * 55}ms` }} onClick={() => launchConsole(account)} onKeyDown={(event) => { if (event.key === 'Enter') launchConsole(account); }} onDragStart={(event) => { if (!isAdmin) return; event.dataTransfer.setData('text/account-id', account.id); event.dataTransfer.effectAllowed = 'move'; }} draggable={isAdmin} role="button" tabIndex={0} aria-label={`进入 ${account.name} AWS 控制台`} title={isAdmin ? '点击进入 AWS，拖动可调整分组' : '点击进入 AWS'}>
                   <h2>{account.name}</h2>
                   {isAdmin && <button className="card-menu-button" onClick={(event) => { event.stopPropagation(); setActiveMenu((current) => current === account.id ? '' : account.id); }} onMouseDown={(event) => event.stopPropagation()} aria-label="账号操作">•••</button>}
-                  {isAdmin && activeMenu === account.id && <div className="card-menu" onClick={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}><button onClick={() => openEdit(account)}>编辑备注</button><button onClick={() => { setActiveMenu(''); setBillingGuideAccount({ id: account.id, name: account.name }); }}>账单访问教程</button><button className="danger" onClick={() => { setActiveMenu(''); setDeleting(account); }}>删除记录</button></div>}
+                  {isAdmin && activeMenu === account.id && <div className="card-menu" onClick={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}><button onClick={() => openEdit(account)}>编辑备注</button>{account.accountType !== 'apn' && <button onClick={() => { setActiveMenu(''); setBillingGuideAccount({ id: account.id, name: account.name }); }}>账单访问教程</button>}<button className="danger" onClick={() => { setActiveMenu(''); setDeleting(account); }}>删除记录</button></div>}
                 </article>
               ))}
             </div>
@@ -381,26 +384,33 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
         <div className="dialog-layer" onMouseDown={(event) => event.target === event.currentTarget && setShowAdd(false)}>
           <section className="account-dialog" role="dialog" aria-modal="true">
             <button className="dialog-close" onClick={() => setShowAdd(false)}>×</button>
-            <div className="dialog-title"><h2>添加代付账号</h2><p>CloudShell 命令适用于所有代付账号</p></div>
+            <div className="dialog-title"><h2>添加账号</h2><p>{groups.find((group) => group.groupId === newAccount.groupId)?.name === 'APN' ? 'APN 账号只配置 Partner Central 只读 API' : 'CloudShell 命令适用于代付管理账号'}</p></div>
             <form onSubmit={(event) => void addAccount(event)}>
               <div className="dialog-grid">
                 <div className="account-form">
                   <label><span>备注</span><input autoFocus value={newAccount.remark} onChange={(event) => setNewAccount((current) => ({ ...current, remark: event.target.value }))} placeholder="例如：上海 PMA 主账号" maxLength={100} /></label>
                   <label><span>代付账号 ID</span><input value={newAccount.accountId} onChange={(event) => setNewAccount((current) => ({ ...current, accountId: event.target.value.replace(/\D/g, '').slice(0, 12) }))} placeholder="12 位账号 ID" inputMode="numeric" /></label>
-                  <label><span>分组</span><select value={newAccount.groupId} onChange={(event) => { const groupId = event.target.value; const isPmaGroup = groups.find((group) => group.groupId === groupId)?.name === 'PMA'; setNewAccount((current) => ({ ...current, groupId, accountType: isPmaGroup ? current.accountType || 'pma' : '' })); }}><option value="">未分组</option>{groups.map((group) => <option key={group.groupId} value={group.groupId}>{group.name}</option>)}</select></label>
+                  <label><span>分组</span><select value={newAccount.groupId} onChange={(event) => { const groupId = event.target.value; const selectedName = groups.find((group) => group.groupId === groupId)?.name; const accountType: AccountType = selectedName === 'PMA' ? (newAccount.accountType === 'cma' ? 'cma' : 'pma') : selectedName === 'APN' ? 'apn' : ''; setNewAccount((current) => ({ ...current, groupId, accountType })); }}><option value="">未分组</option>{groups.map((group) => <option key={group.groupId} value={group.groupId}>{group.name}</option>)}</select></label>
                   {groups.find((group) => group.groupId === newAccount.groupId)?.name === 'PMA' && <label><span>账号类型</span><select value={newAccount.accountType} onChange={(event) => setNewAccount((current) => ({ ...current, accountType: event.target.value as AccountType }))}><option value="pma">PMA账号</option><option value="cma">CMA账号</option></select></label>}
                   <label><span>默认区域</span><select value={newAccount.region} onChange={(event) => setNewAccount((current) => ({ ...current, region: event.target.value }))}>{regions.map((item) => <option key={item}>{item}</option>)}</select></label>
                 </div>
                 <div className="command-panel ready">
-                  <div className="billing-access-steps">
+                  {groups.find((group) => group.groupId === newAccount.groupId)?.name === 'APN' ? <div className="billing-access-steps">
+                    <strong>APN API 接入</strong>
+                    <ol>
+                      <li><b>1</b><span>使用有 IAM 管理权限的身份登录 APN 账号</span></li>
+                      <li><b>2</b><span>打开 CloudShell 并粘贴下方命令</span></li>
+                      <li><b>3</b><span>不要求该账号是 Organizations 管理账号</span></li>
+                    </ol>
+                  </div> : <div className="billing-access-steps">
                     <strong>执行前检查</strong>
                     <ol>
                       <li><b>1</b><span>Root 登录代付账号</span></li>
                       <li><b>2</b><a href="https://console.aws.amazon.com/billing/home#/account" target="_blank" rel="noreferrer">打开 AWS 账户设置 ↗</a></li>
                       <li><b>3</b><span>开启「IAM 用户和角色访问账单信息」</span></li>
                     </ol>
-                  </div>
-                  <div className="command-toolbar"><strong>固定 CloudShell 命令</strong><button type="button" onClick={() => void copyText(provisionCommand, 'command')}>{copied === 'command' ? '已复制' : '复制'}</button></div>
+                  </div>}
+                  <div className="command-toolbar"><strong>{newAccount.accountType === 'apn' ? 'APN API 专用命令' : '固定 CloudShell 命令'}</strong><button type="button" onClick={() => void copyText(provisionCommand, 'command')}>{copied === 'command' ? '已复制' : '复制'}</button></div>
                   <pre><code>{provisionCommand}</code></pre>
                 </div>
               </div>
@@ -418,7 +428,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
             <p className="readonly-id">{formatAccountId(editing.id)}</p>
             <form onSubmit={(event) => void saveEdit(event)}>
               <label><span>备注</span><input autoFocus value={editForm.remark} onChange={(event) => setEditForm((current) => ({ ...current, remark: event.target.value }))} maxLength={100} /></label>
-              <div className="edit-grid"><label><span>分组</span><select value={editForm.groupId} onChange={(event) => { const groupId = event.target.value; const isPmaGroup = groups.find((group) => group.groupId === groupId)?.name === 'PMA'; setEditForm((current) => ({ ...current, groupId, accountType: isPmaGroup ? current.accountType || 'pma' : '' })); }}><option value="">未分组</option>{groups.map((group) => <option key={group.groupId} value={group.groupId}>{group.name}</option>)}</select></label>{groups.find((group) => group.groupId === editForm.groupId)?.name === 'PMA' && <label><span>账号类型</span><select value={editForm.accountType} onChange={(event) => setEditForm((current) => ({ ...current, accountType: event.target.value as AccountType }))}><option value="pma">PMA账号</option><option value="cma">CMA账号</option></select></label>}<label><span>默认区域</span><select value={editForm.region} onChange={(event) => setEditForm((current) => ({ ...current, region: event.target.value }))}>{regions.map((item) => <option key={item}>{item}</option>)}</select></label></div>
+              <div className="edit-grid"><label><span>分组</span><select value={editForm.groupId} onChange={(event) => { const groupId = event.target.value; const selectedName = groups.find((group) => group.groupId === groupId)?.name; setEditForm((current) => ({ ...current, groupId, accountType: selectedName === 'PMA' ? (current.accountType === 'cma' ? 'cma' : 'pma') : selectedName === 'APN' ? 'apn' : '' })); }}><option value="">未分组</option>{groups.map((group) => <option key={group.groupId} value={group.groupId}>{group.name}</option>)}</select></label>{groups.find((group) => group.groupId === editForm.groupId)?.name === 'PMA' && <label><span>账号类型</span><select value={editForm.accountType} onChange={(event) => setEditForm((current) => ({ ...current, accountType: event.target.value as AccountType }))}><option value="pma">PMA账号</option><option value="cma">CMA账号</option></select></label>}<label><span>默认区域</span><select value={editForm.region} onChange={(event) => setEditForm((current) => ({ ...current, region: event.target.value }))}>{regions.map((item) => <option key={item}>{item}</option>)}</select></label></div>
               <div className="dialog-actions"><button type="button" className="cancel" onClick={() => setEditing(null)}>取消</button><button className="save" disabled={saving || !editForm.remark.trim()}>{saving ? '保存中...' : '保存'}</button></div>
             </form>
           </section>
@@ -441,10 +451,10 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
   );
 }
 
-function toManagedAccount(account: AccountRecord): ManagedAccount { const remark = account.remark ?? account.name ?? account.accountId; const accountType: AccountType = account.accountType === 'pma' ? 'pma' : account.accountType === 'cma' ? 'cma' : ''; return { id:account.accountId,name:remark,organization:remark,region:account.region,groupId:account.groupId ?? '',accountType,billingAccessConfirmedAt:account.billingAccessConfirmedAt ?? '',billingAccessReminderRequired:account.billingAccessReminderRequired === true,roleName:'TontianOperationsRole',access:'admin',environment:'production',favorite:false,lastUsed:'' }; }
+function toManagedAccount(account: AccountRecord): ManagedAccount { const remark = account.remark ?? account.name ?? account.accountId; const accountType: AccountType = account.accountType === 'pma' ? 'pma' : account.accountType === 'cma' ? 'cma' : account.accountType === 'apn' ? 'apn' : ''; return { id:account.accountId,name:remark,organization:remark,region:account.region,groupId:account.groupId ?? '',accountType,billingAccessConfirmedAt:account.billingAccessConfirmedAt ?? '',billingAccessReminderRequired:account.billingAccessReminderRequired === true,roleName:'TontianOperationsRole',access:'admin',environment:'production',favorite:false,lastUsed:'' }; }
 function formatAccountId(accountId:string){return accountId.replace(/(\d{4})(?=\d)/g,'$1 ')}
 function isTypingTarget(target:EventTarget|null){return target instanceof HTMLInputElement||target instanceof HTMLTextAreaElement||target instanceof HTMLSelectElement}
-function buildProvisionCommand(accountType: AccountType){const organizationGuard=accountType==='pma'?'':`
+function buildProvisionCommand(accountType: AccountType){if(accountType==='apn')return buildApnApiProvisionCommand();const organizationGuard=accountType==='pma'?'':`
 MANAGEMENT_ACCOUNT_ID=$(aws organizations describe-organization --query 'Organization.MasterAccountId' --output text 2>/dev/null) || {
   echo "错误：当前账号未加入 AWS Organizations，无法作为代付管理账号接入"
   exit 1
@@ -497,3 +507,45 @@ aws iam attach-role-policy --role-name TontianAdminRole --policy-arn arn:aws:iam
 	${organizationFeatures}
 	${SUPPORT_BILLING_PROVISION_FRAGMENT}
 	echo "账号接入完成：$CURRENT_ACCOUNT_ID"`;const bytes=new TextEncoder().encode(script);let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);const encoded=btoa(binary);return `printf '%s' '${encoded}' | base64 -d > /tmp/tontian-account-setup.sh && bash /tmp/tontian-account-setup.sh`;}
+
+function buildApnApiProvisionCommand(){const script=`set -e
+
+export AWS_PAGER=""
+export AWS_CLI_AUTO_PROMPT=off
+
+OPS_ACCOUNT_ID="${OPS_ACCOUNT_ID}"
+CURRENT_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+if [ "$CURRENT_ACCOUNT_ID" = "$OPS_ACCOUNT_ID" ]; then
+  echo "错误：不能在运维账号执行，请在 APN 账号中执行"
+  exit 1
+fi
+
+cat >/tmp/tontian-apn-api-trust.json <<EOF_TRUST
+{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::\${OPS_ACCOUNT_ID}:role/TontianConsoleBrokerRole"},"Action":"sts:AssumeRole"}]}
+EOF_TRUST
+
+if aws iam get-role --role-name TontianOperationsRole >/dev/null 2>&1; then
+  aws iam update-assume-role-policy --role-name TontianOperationsRole --policy-document file:///tmp/tontian-apn-api-trust.json
+else
+  aws iam create-role --role-name TontianOperationsRole --max-session-duration 3600 --assume-role-policy-document file:///tmp/tontian-apn-api-trust.json
+fi
+
+cat >/tmp/tontian-apn-api-read-policy.json <<'EOF_POLICY'
+{"Version":"2012-10-17","Statement":[{"Sid":"PartnerCentralApiReadOnly","Effect":"Allow","Action":["partnercentral:Get*","partnercentral:List*","partnercentral:Describe*","partnercentral:Search*"],"Resource":"*"}]}
+EOF_POLICY
+
+for policy in \
+  arn:aws:iam::aws:policy/ReadOnlyAccess \
+  arn:aws:iam::aws:policy/AWSBillingReadOnlyAccess \
+  arn:aws:iam::aws:policy/AWSAccountManagementReadOnlyAccess \
+  arn:aws:iam::aws:policy/AWSCloudShellFullAccess \
+  arn:aws:iam::aws:policy/AWSPartnerCentralFullAccess; do
+  aws iam detach-role-policy --role-name TontianOperationsRole --policy-arn "$policy" >/dev/null 2>&1 || true
+done
+
+aws iam delete-role-policy --role-name TontianOperationsRole --policy-name TontianOrganizationOperations >/dev/null 2>&1 || true
+aws iam put-role-policy --role-name TontianOperationsRole --policy-name TontianPartnerCentralApiReadOnly --policy-document file:///tmp/tontian-apn-api-read-policy.json
+
+echo "APN API 接入完成：$CURRENT_ACCOUNT_ID"
+echo "仅允许运维平台读取 Partner Central API，不包含组织、账单、CloudShell 或资源管理权限"`;const bytes=new TextEncoder().encode(script);let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);const encoded=btoa(binary);return `printf '%s' '${encoded}' | base64 -d > /tmp/tontian-apn-api-setup.sh && bash /tmp/tontian-apn-api-setup.sh`;}
