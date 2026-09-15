@@ -4,7 +4,7 @@ set -euo pipefail
 FUNCTION_NAME="${1:-TontianConsoleBroker}"
 REGION="${2:-us-east-1}"
 TABLE_NAME="${APN_MONITOR_TABLE:-TontianApnMonitor}"
-RULE_NAME="nexus-apn-status-monitor-hourly"
+RULE_NAME="nexus-apn-status-monitor-daily"
 STATEMENT_ID="NexusApnMonitorSchedule"
 export AWS_PAGER=""
 
@@ -29,7 +29,7 @@ printf '%s' "$CURRENT_ENV" | jq --arg table "$TABLE_NAME" '{Variables:(. + {APN_
 aws lambda update-function-configuration --region "$REGION" --function-name "$FUNCTION_NAME" --environment file:///tmp/nexus-apn-monitor-environment.json >/dev/null
 aws lambda wait function-updated --region "$REGION" --function-name "$FUNCTION_NAME"
 
-RULE_ARN="$(aws events put-rule --region "$REGION" --name "$RULE_NAME" --schedule-expression 'rate(1 hour)' --state ENABLED --query RuleArn --output text)"
+RULE_ARN="$(aws events put-rule --region "$REGION" --name "$RULE_NAME" --schedule-expression 'cron(0 1,8 * * ? *)' --state ENABLED --description '北京时间每天 09:00 和 16:00 同步 APN 状态' --query RuleArn --output text)"
 cat >/tmp/nexus-apn-monitor-targets.json <<EOF
 [{"Id":"NexusApnMonitor","Arn":"${FUNCTION_ARN}","Input":"{\"source\":\"nexus.apn-monitor\",\"detail-type\":\"APN Status Monitor\"}"}]
 EOF

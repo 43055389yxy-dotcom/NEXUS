@@ -312,9 +312,7 @@ async function queryPartition(pk) {
 }
 
 async function loadRules() {
-  const config = (await queryPartition("CONFIG")).find((item) => item.sk === "RULES");
-  const saved = new Map(parseJson(config?.rulesJson, []).map((rule) => [rule.id, rule]));
-  return DEFAULT_MONITOR_RULES.map((rule) => ({ ...rule, enabled: saved.has(rule.id) ? saved.get(rule.id).enabled !== false : rule.enabled }));
+  return DEFAULT_MONITOR_RULES.map((rule) => ({ ...rule, enabled: true }));
 }
 
 async function loadWatchlist() {
@@ -376,8 +374,13 @@ const STATUS_NAMES = {
   Submitted: "已提交", "In Progress": "处理中", ActionRequired: "需要补充资料",
   Rejected: "未通过", Cancelled: "已取消", Closed: "已结束", Qualified: "已确认",
   "Closed Lost": "已关闭", "AWS Closed Lost": "AWS 已关闭",
+  LAUNCHED: "已上线", APPROVED: "已通过", ACTIVE: "进行中", PENDING: "待处理",
+  SUBMITTED: "已提交", IN_REVIEW: "审核中", ACTION_REQUIRED: "需要补充资料",
+  REJECTED: "未通过", CANCELLED: "已取消", CLOSED: "已结束", QUALIFIED: "已确认",
+  CLOSED_LOST: "已关闭", BUSINESS_APPROVAL: "业务审批", FINANCE_APPROVAL: "财务审批",
+  VALIDATION: "资料校验", DRAFT: "草稿", COMPLETED: "已完成", FULFILLED: "已发放",
 };
-function friendly(value) { return STATUS_NAMES[String(value || "")] || display(value); }
+function friendly(value) { const text = String(value || ""); return STATUS_NAMES[text] || STATUS_NAMES[text.toUpperCase()] || display(value); }
 
 async function notify(changes) {
   if (!changes.length || !/^https:\/\/qyapi\.weixin\.qq\.com\/cgi-bin\/webhook\/send\?key=/.test(WEBHOOK_URL)) return;
