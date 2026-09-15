@@ -262,8 +262,16 @@ function allowedConsoleDestination(value) {
   try {
     const url = new URL(String(value));
     const host = url.hostname.toLowerCase();
-    const allowed = url.protocol === "https:" && (host === "console.aws.amazon.com" || host.endsWith(".console.aws.amazon.com") || host === "partnercentral.awspartner.com");
-    return allowed ? url.toString() : "";
+    if (url.protocol !== "https:") return "";
+    if (host === "partnercentral.awspartner.com") {
+      return "https://us-east-1.console.aws.amazon.com/partnercentral/support-cases?region=us-east-1";
+    }
+    if (host === "console.aws.amazon.com" || host.endsWith(".console.aws.amazon.com")) {
+      const region = url.searchParams.get("region") || host.match(/([a-z]{2}(?:-gov)?-[a-z]+-\d)\.console\.aws\.amazon\.com$/)?.[1] || "us-east-1";
+      url.hostname = `${region}.console.aws.amazon.com`;
+      return url.toString();
+    }
+    return "";
   } catch {
     return "";
   }
