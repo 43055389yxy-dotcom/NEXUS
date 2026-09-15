@@ -16,17 +16,13 @@ const sts = new STSClient({ region: REGION });
 export const APN_MONITOR_TEMPLATES = [
   { id: "all", label: "全部", resourceTypes: [] },
   { id: "opportunity", label: "商机", resourceTypes: ["opportunity"] },
-  { id: "wa", label: "WA", businessType: "wa", resourceTypes: [] },
-  { id: "benefit", label: "资金申请", resourceTypes: ["benefit_application", "benefit_allocation"] },
-  { id: "po", label: "PO", resourceTypes: ["purchase_order"] },
+  { id: "benefit", label: "券申请", resourceTypes: ["benefit_application"] },
 ];
 
 export const DEFAULT_MONITOR_RULES = [
   { id: "opportunity.awsStage", label: "商机 AWS 阶段变化", resourceType: "opportunity", field: "awsStage", enabled: true },
-  { id: "opportunity.partnerStage", label: "商机 Partner 阶段变化", resourceType: "opportunity", field: "partnerStage", enabled: true },
-  { id: "opportunity.reviewStatus", label: "商机审核状态变化", resourceType: "opportunity", field: "reviewStatus", enabled: true },
-  { id: "benefit.stage", label: "资金申请阶段变化", resourceType: "benefit_application", field: "stage", enabled: true },
-  { id: "benefit.status", label: "资金申请状态变化", resourceType: "benefit_application", field: "status", enabled: true },
+  { id: "benefit.stage", label: "券申请阶段变化", resourceType: "benefit_application", field: "stage", enabled: true },
+  { id: "benefit.status", label: "券审批状态变化", resourceType: "benefit_application", field: "status", enabled: true },
   { id: "allocation.status", label: "资金分配状态变化", resourceType: "benefit_allocation", field: "status", enabled: true },
   { id: "po.status", label: "PO 状态变化", resourceType: "purchase_order", field: "status", enabled: true },
 ];
@@ -107,11 +103,11 @@ async function mapLimited(items, concurrency, mapper) {
   return output;
 }
 
-async function listAll(client, Command, key) {
+async function listAll(client, Command, key, input = {}) {
   const items = [];
   let NextToken;
   do {
-    const result = await client.send(new Command({ Catalog: "AWS", MaxResults: 100, NextToken }));
+    const result = await client.send(new Command({ Catalog: "AWS", MaxResults: 100, ...input, NextToken }));
     items.push(...(result[key] || []));
     NextToken = result.NextToken;
   } while (NextToken);
@@ -245,6 +241,65 @@ async function collectResources(account) {
   return [...opportunities, ...applications, ...allocations, ...purchaseOrders];
 }
 
+async function collectWatchedResources(account, watchlist) {
+  const { selling, benefits } = await partnerClients(account.accountId);
+  const opportunityDetails = await mapLimited(watchlist, 5, async (opportunityId) => {
+    const [detailResult, awsResult] = await Promise.allSettled([
+      selling.send(new GetOpportunityCommand({ Catalog: "AWS", Identifier: opportunityId })),
+      selling.send(new GetAwsOpportunitySummaryCommand({ Catalog: "AWS", RelatedOpportunityIdentifier: opportunityId })),
+    ]);
+    if (detailResult.status === "rejected") {
+      return { opportunityId, error: detailResult.reason?.message || "无法读取商机" };
+    }
+    return { opportunityId, detail: detailResult.value, aws: awsResult.status === "fulfilled" ? awsResult.value : {} };
+  });
+
+  const opportunities = opportunityDetails.map(({ opportunityId, detail, aws, error }) => {
+    if (!detail) return resource({
+      accountId: account.accountId, resourceType: "opportunity", externalId: opportunityId, title: opportunityId,
+      projectId: `opportunity:${opportunityId}`, status: "读取失败", stage: "",
+      sourceUrl: `https://console.aws.amazon.com/partnercentral/opportunities?region=${PARTNER_REGION}`,
+      fields: { awsStage: "", error: error || "无法读取商机" }, raw: { error },
+    });
+    const customerName = detail.Customer?.Account?.CompanyName || "";
+    const title = detail.Project?.Title || detail.Project?.ProjectTitle || customerName || opportunityId;
+    return resource({
+      accountId: account.accountId, resourceType: "opportunity", externalId: opportunityId, title,
+      businessType: businessType(detail), projectId: `opportunity:${opportunityId}`,
+      status: "", stage: aws.LifeCycle?.Stage || "",
+      sourceUrl: `https://console.aws.amazon.com/partnercentral/opportunities?region=${PARTNER_REGION}`,
+      fields: { awsStage: aws.LifeCycle?.Stage || "", updatedAt: iso(detail.LastModifiedDate), customerName },
+      raw: { detail, aws },
+    });
+  });
+
+  const applicationMap = new Map();
+  for (const opportunity of opportunityDetails) {
+    if (!opportunity.detail?.Arn) continue;
+    const summaries = await listAll(benefits, ListBenefitApplicationsCommand, "BenefitApplicationSummaries", { AssociatedResourceArns: [opportunity.detail.Arn] });
+    for (const summary of summaries) if (summary.Id) applicationMap.set(summary.Id, { summary, opportunityId: opportunity.opportunityId });
+  }
+
+  const applications = (await mapLimited([...applicationMap.values()], 5, async ({ summary, opportunityId }) => {
+    let detail = summary;
+    try { detail = await benefits.send(new GetBenefitApplicationCommand({ Catalog: "AWS", Identifier: summary.Id })); } catch {}
+    return resource({
+      accountId: account.accountId, resourceType: "benefit_application", externalId: summary.Id,
+      title: detail.Name || summary.Name || summary.Id, businessType: businessType({ summary, detail }),
+      projectId: `opportunity:${opportunityId}`, status: detail.Status || summary.Status || "", stage: detail.Stage || summary.Stage || "",
+      sourceUrl: `https://console.aws.amazon.com/partnercentral/funding?region=${PARTNER_REGION}`,
+      fields: {
+        status: detail.Status || summary.Status || "", stage: detail.Stage || summary.Stage || "",
+        statusReason: detail.StatusReason || "", statusReasonCodes: detail.StatusReasonCodes || [],
+        opportunityId, updatedAt: iso(detail.UpdatedAt || summary.UpdatedAt),
+      },
+      relations: detail.AssociatedResources || summary.AssociatedResources || [], raw: { summary, detail },
+    });
+  })).filter(Boolean);
+
+  return [...opportunities, ...applications];
+}
+
 async function queryPartition(pk) {
   const items = [];
   let ExclusiveStartKey;
@@ -260,6 +315,17 @@ async function loadRules() {
   const config = (await queryPartition("CONFIG")).find((item) => item.sk === "RULES");
   const saved = new Map(parseJson(config?.rulesJson, []).map((rule) => [rule.id, rule]));
   return DEFAULT_MONITOR_RULES.map((rule) => ({ ...rule, enabled: saved.has(rule.id) ? saved.get(rule.id).enabled !== false : rule.enabled }));
+}
+
+async function loadWatchlist() {
+  const config = (await queryPartition("CONFIG")).find((item) => item.sk === "WATCHLIST");
+  return parseJson(config?.watchlistJson, []).filter((value) => /^O\d{1,19}$/i.test(String(value))).map((value) => String(value).toUpperCase());
+}
+
+async function saveWatchlist(values) {
+  const watchlist = [...new Set((Array.isArray(values) ? values : []).map((value) => String(value).trim().toUpperCase()).filter((value) => /^O\d{1,19}$/.test(value)))].slice(0, 100);
+  await db.send(new PutItemCommand({ TableName: MONITOR_TABLE, Item: { pk: { S: "CONFIG" }, sk: { S: "WATCHLIST" }, watchlistJson: { S: JSON.stringify(watchlist) }, updatedAt: { S: new Date().toISOString() } } }));
+  return watchlist;
 }
 
 async function saveRules(rules) {
@@ -304,23 +370,31 @@ function notifyEnabled(item, changes, rules) {
   return rules.some((rule) => rule.enabled && rule.resourceType === item.resourceType && changes.some((change) => change.field === rule.field));
 }
 
+const FIELD_NAMES = { awsStage: "AWS 阶段", stage: "审批进度", status: "审批结果" };
+const STATUS_NAMES = {
+  Launched: "已上线", Approved: "已通过", Active: "进行中", Pending: "等待处理",
+  Submitted: "已提交", "In Progress": "处理中", ActionRequired: "需要补充资料",
+  Rejected: "未通过", Cancelled: "已取消", Closed: "已结束", Qualified: "已确认",
+  "Closed Lost": "已关闭", "AWS Closed Lost": "AWS 已关闭",
+};
+function friendly(value) { return STATUS_NAMES[String(value || "")] || display(value); }
+
 async function notify(changes) {
   if (!changes.length || !/^https:\/\/qyapi\.weixin\.qq\.com\/cgi-bin\/webhook\/send\?key=/.test(WEBHOOK_URL)) return;
   const lines = changes.map(({ item, changes: changed }) => {
-    const detail = changed.map((change) => `${change.field}: ${display(change.before)} → ${display(change.after)}`).join("；");
-    const launched = item.businessType === "wa" && item.resourceType === "opportunity" && item.fields.awsStage === "Launched";
-    return `> ${item.title} (${item.externalId})\n> ${detail}${launched ? "\n> 已达到 Launched，可以提交券申请" : ""}`;
+    const detail = changed.map((change) => `${FIELD_NAMES[change.field] || change.field}：${friendly(change.before)} → ${friendly(change.after)}`).join("；");
+    const launched = item.resourceType === "opportunity" && item.fields.awsStage === "Launched";
+    return `> ${item.title}（${item.externalId}）\n> ${detail}${launched ? "\n> 已上线，现在可以提交券申请了" : ""}`;
   });
-  const response = await fetch(WEBHOOK_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ msgtype: "markdown", markdown: { content: [`**APN 业务状态变更汇总**`, `共 ${changes.length} 项发生变化`, ...lines].join("\n\n") } }) });
+  const response = await fetch(WEBHOOK_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ msgtype: "markdown", markdown: { content: [`**APN 状态有变化**`, `这次共有 ${changes.length} 项变化：`, ...lines].join("\n\n") } }) });
   if (!response.ok) throw new Error(`微信群通知失败 (${response.status})`);
 }
 
-async function refreshAccount(account, rules) {
+async function refreshAccount(account, rules, watchlist) {
   const observedAt = new Date().toISOString();
   const previousItems = await queryPartition(`ACCOUNT#${account.accountId}`);
   const previous = new Map(previousItems.filter((item) => item.sk.startsWith("RESOURCE#")).map((item) => [`${item.resourceType}#${item.externalId}`, item]));
-  const hasBaseline = previousItems.some((item) => item.sk === "META");
-  const resources = await collectResources(account);
+  const resources = await collectWatchedResources(account, watchlist);
   const history = [];
   const alertChanges = [];
   for (const item of resources) {
@@ -329,10 +403,6 @@ async function refreshAccount(account, rules) {
     if (old && changed.length) {
       history.push({ item, changes: changed });
       if (notifyEnabled(item, changed, rules)) alertChanges.push({ item, changes: changed });
-    } else if (!old && hasBaseline) {
-      const added = [{ field: "新增", before: "", after: item.status || item.stage || "已发现" }];
-      history.push({ item, changes: added });
-      alertChanges.push({ item, changes: added });
     }
   }
   await batchPut([
@@ -340,7 +410,7 @@ async function refreshAccount(account, rules) {
     ...history.map(({ item, changes }) => ({
       pk: { S: `ACCOUNT#${account.accountId}` }, sk: { S: `HISTORY#${observedAt}#${item.resourceType}#${item.externalId}` },
       accountId: { S: account.accountId }, resourceType: { S: item.resourceType }, externalId: { S: item.externalId },
-      title: { S: item.title }, businessType: { S: item.businessType }, changesJson: { S: safeJson(changes) }, observedAt: { S: observedAt },
+      title: { S: item.title }, businessType: { S: item.businessType }, projectId: { S: item.projectId }, changesJson: { S: safeJson(changes) }, observedAt: { S: observedAt },
     })),
     { pk: { S: `ACCOUNT#${account.accountId}` }, sk: { S: "META" }, accountId: { S: account.accountId }, accountName: { S: account.name }, lastRunAt: { S: observedAt }, resourceCount: { N: String(resources.length) }, status: { S: "ok" } },
   ]);
@@ -351,10 +421,12 @@ export async function refreshApnMonitor() {
   const accounts = await findApnAccounts();
   if (!accounts.length) throw new Error("没有找到 APN 分组中的账号，请先把 APN 账号放入 APN 分组");
   const rules = await loadRules();
+  const watchlist = await loadWatchlist();
+  if (!watchlist.length) return { ok: true, accounts: accounts.length, resources: 0, changes: 0, errors: [] };
   const results = [];
   const errors = [];
   for (const account of accounts) {
-    try { results.push(await refreshAccount(account, rules)); }
+    try { results.push(await refreshAccount(account, rules, watchlist)); }
     catch (error) { errors.push({ accountId: account.accountId, name: account.name, error: error instanceof Error ? error.message : String(error) }); }
   }
   const changes = results.flatMap((result) => result.changes);
@@ -368,18 +440,20 @@ function publicResource(item) {
 
 export async function getApnMonitorData() {
   const accounts = await findApnAccounts();
+  const watchlist = await loadWatchlist();
+  const watched = new Set(watchlist);
   const resources = [];
   const history = [];
   const accountStates = [];
   for (const account of accounts) {
     const items = await queryPartition(`ACCOUNT#${account.accountId}`);
-    resources.push(...items.filter((item) => item.sk.startsWith("RESOURCE#")).map(publicResource));
-    history.push(...items.filter((item) => item.sk.startsWith("HISTORY#")).map((item) => ({ accountId: item.accountId, resourceType: item.resourceType, externalId: item.externalId, title: item.title, businessType: item.businessType, changes: parseJson(item.changesJson, []), observedAt: item.observedAt })));
+    resources.push(...items.filter((item) => item.sk.startsWith("RESOURCE#")).map(publicResource).filter((item) => watched.has(item.externalId) || watched.has(String(item.fields.opportunityId || "")) || watched.has(String(item.projectId || "").replace(/^opportunity:/, ""))));
+    history.push(...items.filter((item) => item.sk.startsWith("HISTORY#") && (watched.has(item.externalId) || watched.has(String(item.projectId || "").replace(/^opportunity:/, "")))).map((item) => ({ accountId: item.accountId, resourceType: item.resourceType, externalId: item.externalId, title: item.title, businessType: item.businessType, projectId: item.projectId, changes: parseJson(item.changesJson, []), observedAt: item.observedAt })));
     const meta = items.find((item) => item.sk === "META");
     accountStates.push({ ...account, lastRunAt: meta?.lastRunAt || "", status: meta?.status || "not_scanned", resourceCount: Number(meta?.resourceCount || 0) });
   }
   history.sort((a, b) => String(b.observedAt).localeCompare(String(a.observedAt)));
-  return { accounts: accountStates, resources, history: history.slice(0, 200), rules: await loadRules(), templates: APN_MONITOR_TEMPLATES };
+  return { accounts: accountStates, resources, history: history.slice(0, 200), rules: await loadRules(), templates: APN_MONITOR_TEMPLATES, watchlist };
 }
 
 export function isApnMonitorScheduledEvent(event) {
@@ -390,6 +464,7 @@ export async function runScheduledApnMonitor() { return refreshApnMonitor(); }
 
 export async function handleApnMonitorRequest({ method, body }) {
   if (method === "GET") return getApnMonitorData();
+  if (method === "POST" && body?.action === "saveWatchlist") return { ok: true, watchlist: await saveWatchlist(body.watchlist) };
   if (method === "POST" && body?.action === "saveRules") return { ok: true, rules: await saveRules(body.rules) };
   if (method === "POST") return refreshApnMonitor();
   throw new Error("不支持的请求方法");
