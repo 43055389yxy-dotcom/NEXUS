@@ -16,6 +16,7 @@ type GroupRecord = { groupId: string; name: string };
 type ManagedAccount = CloudAccount & { groupId: string; accountType: AccountType; billingAccessConfirmedAt: string; billingAccessReminderRequired: boolean };
 type NewAccount = { remark: string; accountId: string; region: string; groupId: string; accountType: AccountType };
 type PermissionUser = { userId: string; userName: string; role: string; groupIds: string[]; configured?: boolean };
+type ApnQuickLink = { id: string; name: string; url: string };
 
 function cmaSectionName(name: string) {
   return name.trim().match(/^(P\d+)(?:-|$)/i)?.[1].toUpperCase() ?? '其他';
@@ -55,6 +56,12 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
   const [permissionUsers, setPermissionUsers] = useState<PermissionUser[]>([]);
   const [permissionQuery, setPermissionQuery] = useState('');
   const [dirtyPermissionUsers, setDirtyPermissionUsers] = useState<string[]>([]);
+  const [apnLinks, setApnLinks] = useState<ApnQuickLink[]>([]);
+  const [editingApnLink, setEditingApnLink] = useState<ApnQuickLink | null>(null);
+  const [showApnLinkDialog, setShowApnLinkDialog] = useState(false);
+  const [apnLinkName, setApnLinkName] = useState('');
+  const [apnLinkUrl, setApnLinkUrl] = useState('');
+  const [savingApnLink, setSavingApnLink] = useState(false);
 
   useEffect(() => {
     if (!activeMenu) return;
@@ -96,6 +103,61 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
     const frame = window.requestAnimationFrame(() => void loadData());
     return () => window.cancelAnimationFrame(frame);
   }, []);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    fetch('/api/apn-monitor', { cache: 'no-store' })
+      .then(async (response) => {
+        if (!response.ok) return;
+        const payload = await response.json() as { links?: ApnQuickLink[] };
+        setApnLinks(Array.isArray(payload.links) ? payload.links : []);
+      })
+      .catch(() => undefined);
+  }, [isAdmin]);
+
+  function openApnLinkDialog(link?: ApnQuickLink) {
+    setEditingApnLink(link ?? null);
+    setApnLinkName(link?.name ?? '');
+    setApnLinkUrl(link?.url ?? '');
+    setShowApnLinkDialog(true);
+  }
+
+  async function persistApnLinks(nextLinks: ApnQuickLink[]) {
+    setSavingApnLink(true);
+    try {
+      const response = await fetch('/api/apn-monitor', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'saveQuickLinks', links: nextLinks }),
+      });
+      const payload = await response.json() as { links?: ApnQuickLink[]; error?: string };
+      if (!response.ok) throw new Error(payload.error ?? '保存失败');
+      setApnLinks(Array.isArray(payload.links) ? payload.links : nextLinks);
+      setShowApnLinkDialog(false);
+      setNotice('快捷链接已保存');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '保存失败');
+    } finally {
+      setSavingApnLink(false);
+    }
+  }
+
+  async function saveApnLink() {
+    const name = apnLinkName.trim();
+    const url = apnLinkUrl.trim();
+    if (!name) { setNotice('请输入链接名称'); return; }
+    if (!/^https:\/\//i.test(url)) { setNotice('请输入以 https:// 开头的链接'); return; }
+    const nextLink = { id: editingApnLink?.id ?? crypto.randomUUID(), name, url };
+    const nextLinks = editingApnLink
+      ? apnLinks.map((link) => link.id === editingApnLink.id ? nextLink : link)
+      : [...apnLinks, nextLink];
+    await persistApnLinks(nextLinks);
+  }
+
+  async function deleteApnLink() {
+    if (!editingApnLink) return;
+    await persistApnLinks(apnLinks.filter((link) => link.id !== editingApnLink.id));
+  }
 
   useEffect(() => {
     if (loading || billingGuideAccount) return;
@@ -371,12 +433,30 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
                 </article>
               ))}
             </div>
+            {groupNameFor(selectedGroup) === 'APN' && (
+              <section className="apn-quick-links">
+                <div className="apn-quick-links-heading">
+                  <div><span>APN 快捷入口</span><h2>常用链接</h2></div>
+                  {isAdmin && <button type="button" onClick={() => openApnLinkDialog()}>添加链接</button>}
+                </div>
+                <div className="apn-quick-links-grid">
+                  {apnLinks.map((link) => (
+                    <article className="apn-quick-link-card" key={link.id} role="link" tabIndex={0} onClick={() => window.open(link.url, '_blank', 'noopener,noreferrer')} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); window.open(link.url, '_blank', 'noopener,noreferrer'); } }}>
+                      <i>↗</i><strong>{link.name}</strong><span>{new URL(link.url).hostname}</span>
+                      {isAdmin && <button type="button" onClick={(event) => { event.stopPropagation(); openApnLinkDialog(link); }}>编辑</button>}
+                    </article>
+                  ))}
+                </div>
+              </section>
+            )}
           </>)}
           {!loading && !loadError && visibleAccounts.length === 0 && accounts.length > 0 && <div className="inline-state"><span>⌕</span><strong>没有匹配账号</strong><button onClick={() => setQuery('')}>清除搜索</button></div>}
         </section>
       </div>
 
       {showAddGroup && <div className="dialog-layer" onMouseDown={(event) => event.target === event.currentTarget && closeGroupDialog()}><section className="group-dialog" role="dialog" aria-modal="true"><button className="dialog-close" onClick={() => closeGroupDialog()}>×</button><h2>{editingGroup ? '编辑分组' : '新建分组'}</h2><form onSubmit={(event) => void addGroup(event)}><label><span>分组名称</span><input autoFocus value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="例如：新代付组" maxLength={50} /></label><div className="dialog-actions"><button type="button" className="cancel" onClick={() => closeGroupDialog()}>取消</button><button className="save" disabled={saving || !groupName.trim()}>{saving ? '保存中...' : editingGroup ? '保存修改' : '创建'}</button></div></form></section></div>}
+
+      {showApnLinkDialog && <div className="dialog-layer" onMouseDown={(event) => event.target === event.currentTarget && setShowApnLinkDialog(false)}><section className="edit-dialog apn-link-dialog" role="dialog" aria-modal="true"><button className="dialog-close" onClick={() => setShowApnLinkDialog(false)}>×</button><h2>{editingApnLink ? '编辑链接' : '添加链接'}</h2><form onSubmit={(event) => { event.preventDefault(); void saveApnLink(); }}><label><span>链接名称</span><input autoFocus value={apnLinkName} onChange={(event) => setApnLinkName(event.target.value)} placeholder="例如：创建工单" maxLength={60} /></label><label><span>链接地址</span><input value={apnLinkUrl} onChange={(event) => setApnLinkUrl(event.target.value)} placeholder="https://" /></label><div className="dialog-actions apn-link-dialog-actions">{editingApnLink && <button type="button" className="delete-confirm" disabled={savingApnLink} onClick={() => void deleteApnLink()}>删除</button>}<span /><button type="button" className="cancel" disabled={savingApnLink} onClick={() => setShowApnLinkDialog(false)}>取消</button><button className="save" disabled={savingApnLink || !apnLinkName.trim() || !apnLinkUrl.trim()}>{savingApnLink ? '保存中...' : '保存'}</button></div></form></section></div>}
 
       {showPermissions && <div className="dialog-layer" onMouseDown={(event) => event.target === event.currentTarget && setShowPermissions(false)}><section className="permission-dialog" role="dialog" aria-modal="true"><button className="dialog-close" onClick={() => setShowPermissions(false)}>×</button><div className="permission-heading"><span>ACCESS CONTROL</span><h2>分组权限</h2><p>勾选用户可以查看和进入的账号分组</p></div><div className="permission-tools"><span>ITSM 用户 {permissionUsers.length}</span><input value={permissionQuery} onChange={(event) => setPermissionQuery(event.target.value)} placeholder="搜索用户" /></div>{permissionUsers.length === 0 ? <div className="permission-empty">ITSM 中暂无启用用户</div> : <div className="permission-matrix-scroll"><table className="permission-matrix"><thead><tr><th>用户</th><th>未分组</th>{groups.map((group) => <th key={group.groupId}>{group.name}</th>)}<th>快捷操作</th></tr></thead><tbody>{permissionUsers.filter((item) => !permissionQuery.trim() || item.userName.toLowerCase().includes(permissionQuery.trim().toLowerCase())).map((item) => { const isSuperAdministrator = item.role === 'super_admin'; const isAdministrator = item.role === 'admin'; const canEdit = !isSuperAdministrator && (!isAdministrator || userRole === 'super_admin'); const allGroupIds = ['__ungrouped', ...groups.map((group) => group.groupId)]; const effectiveGroupIds = isSuperAdministrator || (isAdministrator && !item.configured) ? allGroupIds : item.groupIds; const allSelected = allGroupIds.every((groupId) => effectiveGroupIds.includes(groupId)); return <tr key={item.userId} className={`${isAdministrator || isSuperAdministrator ? 'administrator' : ''} ${dirtyPermissionUsers.includes(item.userId) ? 'changed' : ''}`}><th><span>{item.userName.slice(0, 1).toUpperCase()}</span><div><strong>{item.userName}</strong><small>{isSuperAdministrator ? '超级管理员 · 全部分组' : isAdministrator ? `管理员 · ${effectiveGroupIds.length} 个分组` : `${effectiveGroupIds.length} 个分组`}</small></div></th><td><input aria-label={`${item.userName} 未分组`} type="checkbox" disabled={!canEdit} checked={effectiveGroupIds.includes('__ungrouped')} onChange={() => updateUserGroups(item.userId, effectiveGroupIds.includes('__ungrouped') ? effectiveGroupIds.filter((value) => value !== '__ungrouped') : [...effectiveGroupIds, '__ungrouped'])} /></td>{groups.map((group) => <td key={group.groupId}><input aria-label={`${item.userName} ${group.name}`} type="checkbox" disabled={!canEdit} checked={effectiveGroupIds.includes(group.groupId)} onChange={() => updateUserGroups(item.userId, effectiveGroupIds.includes(group.groupId) ? effectiveGroupIds.filter((value) => value !== group.groupId) : [...effectiveGroupIds, group.groupId])} /></td>)}<td><button disabled={!canEdit} onClick={() => updateUserGroups(item.userId, allSelected ? [] : allGroupIds)}>{isSuperAdministrator ? '全部权限' : !canEdit ? '仅超级管理员' : allSelected ? '清空' : '全部'}</button></td></tr>; })}</tbody></table></div>}<div className="permission-footer"><span>{dirtyPermissionUsers.length > 0 ? `${dirtyPermissionUsers.length} 位用户待保存` : '权限已同步'}</span><div><button className="cancel" onClick={() => setShowPermissions(false)}>关闭</button><button className="save" disabled={saving || dirtyPermissionUsers.length === 0} onClick={() => void saveUserPermissions()}>{saving ? '保存中...' : '保存权限'}</button></div></div></section></div>}
 

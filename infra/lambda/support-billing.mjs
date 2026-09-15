@@ -624,6 +624,16 @@ async function scanAction(payer, persist = saveSnapshot) {
   return snapshot;
 }
 
+function beijingDate(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
+}
+
+function scannedSuccessfullyToday(payer) {
+  return Boolean(payer.snapshot && payer.lastScanAt && ["success", "partial"].includes(payer.lastStatus) && beijingDate(payer.lastScanAt) === beijingDate());
+}
+
 function notificationText(value) {
   return String(value ?? "").replace(/[<>&`\r\n]/g, " ").trim().slice(0, 80);
 }
@@ -832,6 +842,7 @@ export async function handleSupportBillingRequest({ method, body, identity }) {
   }
   if (body.action === "snapshot") return { payer: publicPayer(payer), snapshot: payer.snapshot || { lastScanAt: "", months: Object.fromEntries(periodDefinitions().map((item) => [item.key, item.billingPeriod])), accounts: [] } };
   if (body.action === "scan") {
+    if (scannedSuccessfullyToday(payer)) return { payer: publicPayer(payer), snapshot: payer.snapshot, skipped: true, message: "今日已同步，已跳过重复扫描" };
     try { return { payer: publicPayer(payer), snapshot: await scanAction(payer) }; }
     catch (error) {
       try { await markFailure(payer, error?.message || "扫描失败"); } catch {}

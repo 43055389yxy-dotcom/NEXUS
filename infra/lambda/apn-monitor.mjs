@@ -13,6 +13,13 @@ const WEBHOOK_URL = process.env.WECOM_APN_WEBHOOK_URL || process.env.WECOM_SUPPO
 const db = new DynamoDBClient({ region: REGION });
 const sts = new STSClient({ region: REGION });
 
+const DEFAULT_APN_QUICK_LINKS = [
+  { id: "support-cases", name: "创建工单", url: "https://partnercentral.awspartner.com/partnercentral2/s/zh-CN/support-cases" },
+  { id: "wa-funding", name: "WA 资金支持", url: "https://012994659181-pff4pbg5.us-east-1.console.aws.amazon.com/partnercentral/funding?region=us-east-1" },
+  { id: "billing-transfer", name: "账单转账", url: "https://012994659181-pff4pbg5.us-east-1.console.aws.amazon.com/partnercentral/channel?region=us-east-1" },
+  { id: "opportunities", name: "PO / 商机管理", url: "https://012994659181-pff4pbg5.us-east-1.console.aws.amazon.com/partnercentral/opportunities?region=us-east-1" },
+];
+
 export const APN_MONITOR_TEMPLATES = [
   { id: "all", label: "全部", resourceTypes: [] },
   { id: "opportunity", label: "商机", resourceTypes: ["opportunity"] },
@@ -326,6 +333,29 @@ async function saveWatchlist(values) {
   return watchlist;
 }
 
+function normalizeQuickLinks(values) {
+  if (!Array.isArray(values)) return [];
+  return values.slice(0, 30).map((value, index) => {
+    const name = String(value?.name || "").trim().slice(0, 60);
+    const url = String(value?.url || "").trim().slice(0, 2000);
+    if (!name || !/^https:\/\//i.test(url)) return null;
+    return { id: String(value?.id || `apn-link-${Date.now()}-${index}`).slice(0, 100), name, url };
+  }).filter(Boolean);
+}
+
+async function loadQuickLinks() {
+  const config = (await queryPartition("CONFIG")).find((item) => item.sk === "QUICK_LINKS");
+  if (!config?.linksJson) return DEFAULT_APN_QUICK_LINKS;
+  const links = normalizeQuickLinks(parseJson(config.linksJson, []));
+  return links;
+}
+
+async function saveQuickLinks(values) {
+  const links = normalizeQuickLinks(values);
+  await db.send(new PutItemCommand({ TableName: MONITOR_TABLE, Item: { pk: { S: "CONFIG" }, sk: { S: "QUICK_LINKS" }, linksJson: { S: JSON.stringify(links) }, updatedAt: { S: new Date().toISOString() } } }));
+  return links;
+}
+
 async function saveRules(rules) {
   const allowed = new Set(DEFAULT_MONITOR_RULES.map((rule) => rule.id));
   const normalized = (Array.isArray(rules) ? rules : []).filter((rule) => allowed.has(rule?.id)).map((rule) => ({ id: rule.id, enabled: rule.enabled !== false }));
@@ -444,6 +474,7 @@ function publicResource(item) {
 export async function getApnMonitorData() {
   const accounts = await findApnAccounts();
   const watchlist = await loadWatchlist();
+  const links = await loadQuickLinks();
   const watched = new Set(watchlist);
   const resources = [];
   const history = [];
@@ -458,7 +489,7 @@ export async function getApnMonitorData() {
   history.sort((a, b) => String(b.observedAt).localeCompare(String(a.observedAt)));
   const visibleFields = new Set(["awsStage", "stage", "status"]);
   const visibleHistory = history.map((item) => ({ ...item, changes: item.changes.filter((change) => visibleFields.has(change.field) && display(change.before) !== display(change.after)) })).filter((item) => item.changes.length > 0);
-  return { accounts: accountStates, resources, history: visibleHistory.slice(0, 200), rules: await loadRules(), templates: APN_MONITOR_TEMPLATES, watchlist };
+  return { accounts: accountStates, resources, history: visibleHistory.slice(0, 200), rules: await loadRules(), templates: APN_MONITOR_TEMPLATES, watchlist, links };
 }
 
 export function isApnMonitorScheduledEvent(event) {
@@ -471,6 +502,7 @@ export async function handleApnMonitorRequest({ method, body }) {
   if (method === "GET") return getApnMonitorData();
   if (method === "POST" && body?.action === "saveWatchlist") return { ok: true, watchlist: await saveWatchlist(body.watchlist) };
   if (method === "POST" && body?.action === "saveRules") return { ok: true, rules: await saveRules(body.rules) };
+  if (method === "POST" && body?.action === "saveQuickLinks") return { ok: true, links: await saveQuickLinks(body.links) };
   if (method === "POST") return refreshApnMonitor();
   throw new Error("不支持的请求方法");
 }
