@@ -416,7 +416,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
       <header className="console-header">
         <a className="console-brand" href="#top"><span>N</span><strong>NEXUS</strong><small>AWS 账号管理</small></a>
         <div className="header-search"><span>⌕</span><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、账号 ID、区域" /><kbd>/</kbd></div>
-        <div className="header-actions">{isAdmin && <SupportBillingPanel onNotice={setNotice} />}{isAdmin && <OuAutomationPanel ref={ouAutomationRef} onNotice={setNotice} />}{isAdmin && <a className="permission-button" href="/apn-monitor" style={{ textDecoration: 'none' }}>APN 监控</a>}{isAdmin && <button className="permission-button" onClick={() => void openPermissions()}>权限设置</button>}{isAdmin && <button className="add-button" onClick={() => setShowAdd(true)}><span>+</span> 添加账号</button>}</div>
+        <div className="header-actions"><SupportBillingPanel onNotice={setNotice} /><OuAutomationPanel ref={ouAutomationRef} onNotice={setNotice} /><a className="permission-button" href="/apn-monitor" style={{ textDecoration: 'none' }}>APN 监控</a>{isAdmin && <button className="permission-button" onClick={() => void openPermissions()}>权限设置</button>}<button className="add-button" onClick={() => setShowAdd(true)}><span>+</span> 添加账号</button></div>
       </header>
 
       <div className="platform-layout" id="top">
@@ -588,6 +588,8 @@ fi
 
 aws iam attach-role-policy --role-name TontianOperationsRole --policy-arn arn:aws:iam::aws:policy/ReadOnlyAccess
 aws iam attach-role-policy --role-name TontianOperationsRole --policy-arn arn:aws:iam::aws:policy/AWSBillingReadOnlyAccess
+aws iam attach-role-policy --role-name TontianOperationsRole --policy-arn arn:aws:iam::aws:policy/job-function/Billing
+aws iam attach-role-policy --role-name TontianOperationsRole --policy-arn arn:aws:iam::aws:policy/AWSSupportAccess
 aws iam attach-role-policy --role-name TontianOperationsRole --policy-arn arn:aws:iam::aws:policy/AWSAccountManagementReadOnlyAccess
 aws iam attach-role-policy --role-name TontianOperationsRole --policy-arn arn:aws:iam::aws:policy/AWSCloudShellFullAccess
 aws iam attach-role-policy --role-name TontianOperationsRole --policy-arn arn:aws:iam::aws:policy/AWSPartnerCentralFullAccess
@@ -595,6 +597,10 @@ cat >/tmp/tontian-organization-operations.json <<'EOF_ORG'
 {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["organizations:MoveAccount","organizations:InviteAccountToOrganization"],"Resource":"*"}]}
 EOF_ORG
 aws iam put-role-policy --role-name TontianOperationsRole --policy-name TontianOrganizationOperations --policy-document file:///tmp/tontian-organization-operations.json
+cat >/tmp/tontian-billing-preferences.json <<'EOF_BILLING_PREFERENCES'
+{"Version":"2012-10-17","Statement":[{"Sid":"ManageBillingPreferences","Effect":"Allow","Action":["billing:Get*","billing:List*","billing:Update*"],"Resource":"*"}]}
+EOF_BILLING_PREFERENCES
+aws iam put-role-policy --role-name TontianOperationsRole --policy-name TontianBillingPreferences --policy-document file:///tmp/tontian-billing-preferences.json
 aws iam attach-role-policy --role-name TontianAdminRole --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
 aws iam attach-role-policy --role-name TontianAdminRole --policy-arn arn:aws:iam::aws:policy/AWSPartnerCentralFullAccess
 	${organizationFeatures}
@@ -629,12 +635,19 @@ for policy in \
   arn:aws:iam::aws:policy/job-function/Billing \
   arn:aws:iam::aws:policy/AWSAccountManagementReadOnlyAccess \
   arn:aws:iam::aws:policy/AWSCloudShellFullAccess \
+  arn:aws:iam::aws:policy/job-function/Billing \
+  arn:aws:iam::aws:policy/AWSSupportAccess \
   arn:aws:iam::aws:policy/AWSSupportAccess \
   arn:aws:iam::aws:policy/SecurityAudit \
   arn:aws:iam::aws:policy/AWSPartnerCentralFullAccess \
   arn:aws:iam::aws:policy/AWSMarketplaceSellerFullAccess; do
   aws iam attach-role-policy --role-name TontianOperationsRole --policy-arn "$policy"
 done
+
+cat >/tmp/tontian-billing-preferences.json <<'EOF_BILLING_PREFERENCES'
+{"Version":"2012-10-17","Statement":[{"Sid":"ManageBillingPreferences","Effect":"Allow","Action":["billing:Get*","billing:List*","billing:Update*"],"Resource":"*"}]}
+EOF_BILLING_PREFERENCES
+aws iam put-role-policy --role-name TontianOperationsRole --policy-name TontianBillingPreferences --policy-document file:///tmp/tontian-billing-preferences.json
 
 aws iam delete-role-policy --role-name TontianOperationsRole --policy-name TontianOrganizationOperations >/dev/null 2>&1 || true
 aws iam delete-role-policy --role-name TontianOperationsRole --policy-name TontianPartnerCentralApiReadOnly >/dev/null 2>&1 || true
