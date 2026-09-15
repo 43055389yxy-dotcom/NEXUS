@@ -230,7 +230,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
       const addedAccount = toManagedAccount(payload.account as AccountRecord);
       setAccounts((current) => [...current, addedAccount]);
       setShowAdd(false);
-      if (selectedGroupName === 'APN') setNotice(`${remark} 已添加，请使用刚才复制的 APN API 命令完成接入`);
+      if (selectedGroupName === 'APN') setNotice(`${remark} 已添加，请执行已复制的 APN 接入命令`);
       else {
         promptedBillingAccess.current.add(accountId);
         setBillingGuideAccount({ id: accountId, name: remark });
@@ -341,7 +341,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
       <header className="console-header">
         <a className="console-brand" href="#top"><span>N</span><strong>NEXUS</strong><small>AWS 账号管理</small></a>
         <div className="header-search"><span>⌕</span><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、账号 ID、区域" /><kbd>/</kbd></div>
-        <div className="header-actions"><span className="current-user">{userName}</span><button className="icon-button" onClick={() => void loadData()} aria-label="刷新" title="刷新">↻</button>{isAdmin && <SupportBillingPanel onNotice={setNotice} />}{isAdmin && <OuAutomationPanel ref={ouAutomationRef} onNotice={setNotice} />}{isAdmin && <a className="permission-button" href="/apn-monitor" style={{ textDecoration: 'none' }}>APN 监控</a>}{isAdmin && <button className="permission-button" onClick={() => void openPermissions()}>权限设置</button>}{isAdmin && <button className="add-button" onClick={() => setShowAdd(true)}><span>+</span> 添加账号</button>}</div>
+        <div className="header-actions"><span className="current-user">{userName}</span><button className="icon-button" onClick={() => void loadData()} aria-label="刷新" title="刷新">↻</button>{isAdmin && <SupportBillingPanel onNotice={setNotice} />}{isAdmin && <OuAutomationPanel ref={ouAutomationRef} onNotice={setNotice} />}{isAdmin && <a className="permission-button" href="/apn-monitor" style={{ textDecoration: 'none', whiteSpace: 'nowrap', minWidth: 92, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>APN 监控</a>}{isAdmin && <button className="permission-button" onClick={() => void openPermissions()}>权限设置</button>}{isAdmin && <button className="add-button" onClick={() => setShowAdd(true)}><span>+</span> 添加账号</button>}</div>
       </header>
 
       <div className="platform-layout" id="top">
@@ -384,7 +384,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
         <div className="dialog-layer" onMouseDown={(event) => event.target === event.currentTarget && setShowAdd(false)}>
           <section className="account-dialog" role="dialog" aria-modal="true">
             <button className="dialog-close" onClick={() => setShowAdd(false)}>×</button>
-            <div className="dialog-title"><h2>添加账号</h2><p>{groups.find((group) => group.groupId === newAccount.groupId)?.name === 'APN' ? 'APN 账号只配置 Partner Central 只读 API' : 'CloudShell 命令适用于代付管理账号'}</p></div>
+            <div className="dialog-title"><h2>添加账号</h2><p>{groups.find((group) => group.groupId === newAccount.groupId)?.name === 'APN' ? 'APN 账号无需加入 AWS Organizations' : 'CloudShell 命令适用于代付管理账号'}</p></div>
             <form onSubmit={(event) => void addAccount(event)}>
               <div className="dialog-grid">
                 <div className="account-form">
@@ -396,11 +396,11 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
                 </div>
                 <div className="command-panel ready">
                   {groups.find((group) => group.groupId === newAccount.groupId)?.name === 'APN' ? <div className="billing-access-steps">
-                    <strong>APN API 接入</strong>
+                    <strong>APN 账号接入</strong>
                     <ol>
-                      <li><b>1</b><span>使用有 IAM 管理权限的身份登录 APN 账号</span></li>
-                      <li><b>2</b><span>打开 CloudShell 并粘贴下方命令</span></li>
-                      <li><b>3</b><span>不要求该账号是 Organizations 管理账号</span></li>
+                      <li><b>1</b><span>使用 Root 或 IAM 管理员登录 APN 账号</span></li>
+                      <li><b>2</b><a href="https://console.aws.amazon.com/billing/home#/account" target="_blank" rel="noreferrer">Root 首次开启 IAM 账单访问 ↗</a></li>
+                      <li><b>3</b><span>打开 CloudShell 并执行下方命令，无需加入 Organizations</span></li>
                     </ol>
                   </div> : <div className="billing-access-steps">
                     <strong>执行前检查</strong>
@@ -410,7 +410,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
                       <li><b>3</b><span>开启「IAM 用户和角色访问账单信息」</span></li>
                     </ol>
                   </div>}
-                  <div className="command-toolbar"><strong>{newAccount.accountType === 'apn' ? 'APN API 专用命令' : '固定 CloudShell 命令'}</strong><button type="button" onClick={() => void copyText(provisionCommand, 'command')}>{copied === 'command' ? '已复制' : '复制'}</button></div>
+                  <div className="command-toolbar"><strong>{newAccount.accountType === 'apn' ? 'APN CloudShell 接入命令' : '固定 CloudShell 命令'}</strong><button type="button" onClick={() => void copyText(provisionCommand, 'command')}>{copied === 'command' ? '已复制' : '复制'}</button></div>
                   <pre><code>{provisionCommand}</code></pre>
                 </div>
               </div>
@@ -531,21 +531,22 @@ else
   aws iam create-role --role-name TontianOperationsRole --max-session-duration 3600 --assume-role-policy-document file:///tmp/tontian-apn-api-trust.json
 fi
 
-cat >/tmp/tontian-apn-api-read-policy.json <<'EOF_POLICY'
-{"Version":"2012-10-17","Statement":[{"Sid":"PartnerCentralApiReadOnly","Effect":"Allow","Action":["partnercentral:Get*","partnercentral:List*","partnercentral:Describe*","partnercentral:Search*"],"Resource":"*"}]}
-EOF_POLICY
-
 for policy in \
   arn:aws:iam::aws:policy/ReadOnlyAccess \
-  arn:aws:iam::aws:policy/AWSBillingReadOnlyAccess \
+  arn:aws:iam::aws:policy/job-function/Billing \
   arn:aws:iam::aws:policy/AWSAccountManagementReadOnlyAccess \
   arn:aws:iam::aws:policy/AWSCloudShellFullAccess \
-  arn:aws:iam::aws:policy/AWSPartnerCentralFullAccess; do
-  aws iam detach-role-policy --role-name TontianOperationsRole --policy-arn "$policy" >/dev/null 2>&1 || true
+  arn:aws:iam::aws:policy/AWSSupportAccess \
+  arn:aws:iam::aws:policy/SecurityAudit \
+  arn:aws:iam::aws:policy/AWSPartnerCentralFullAccess \
+  arn:aws:iam::aws:policy/AWSMarketplaceSellerFullAccess; do
+  aws iam attach-role-policy --role-name TontianOperationsRole --policy-arn "$policy"
 done
 
 aws iam delete-role-policy --role-name TontianOperationsRole --policy-name TontianOrganizationOperations >/dev/null 2>&1 || true
-aws iam put-role-policy --role-name TontianOperationsRole --policy-name TontianPartnerCentralApiReadOnly --policy-document file:///tmp/tontian-apn-api-read-policy.json
+aws iam delete-role-policy --role-name TontianOperationsRole --policy-name TontianPartnerCentralApiReadOnly >/dev/null 2>&1 || true
 
-echo "APN API 接入完成：$CURRENT_ACCOUNT_ID"
-echo "仅允许运维平台读取 Partner Central API，不包含组织、账单、CloudShell 或资源管理权限"`;const bytes=new TextEncoder().encode(script);let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);const encoded=btoa(binary);return `printf '%s' '${encoded}' | base64 -d > /tmp/tontian-apn-api-setup.sh && bash /tmp/tontian-apn-api-setup.sh`;}
+echo "APN 账号接入完成：$CURRENT_ACCOUNT_ID"
+echo "已开通 Partner Central、Marketplace、账单与成本管理、Support、CloudShell、安全审计及其他服务只读权限"
+echo "未检查或调用 AWS Organizations，也未授予云资源创建权限"
+echo "如果账单页面仍提示拒绝，请使用 Root 在账单账户设置中开启 IAM 用户和角色访问"`;const bytes=new TextEncoder().encode(script);let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);const encoded=btoa(binary);return `printf '%s' '${encoded}' | base64 -d > /tmp/tontian-apn-account-setup.sh && bash /tmp/tontian-apn-account-setup.sh`;}
