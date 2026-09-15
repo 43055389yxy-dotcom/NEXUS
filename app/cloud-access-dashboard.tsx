@@ -341,7 +341,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
       <header className="console-header">
         <a className="console-brand" href="#top"><span>N</span><strong>NEXUS</strong><small>AWS 账号管理</small></a>
         <div className="header-search"><span>⌕</span><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、账号 ID、区域" /><kbd>/</kbd></div>
-        <div className="header-actions"><span className="current-user">{userName}</span><button className="icon-button" onClick={() => void loadData()} aria-label="刷新" title="刷新">↻</button>{isAdmin && <SupportBillingPanel onNotice={setNotice} />}{isAdmin && <OuAutomationPanel ref={ouAutomationRef} onNotice={setNotice} />}{isAdmin && <a className="permission-button" href="/apn-monitor" style={{ textDecoration: 'none', whiteSpace: 'nowrap', minWidth: 92, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>APN 监控</a>}{isAdmin && <button className="permission-button" onClick={() => void openPermissions()}>权限设置</button>}{isAdmin && <button className="add-button" onClick={() => setShowAdd(true)}><span>+</span> 添加账号</button>}</div>
+        <div className="header-actions">{isAdmin && <SupportBillingPanel onNotice={setNotice} />}{isAdmin && <OuAutomationPanel ref={ouAutomationRef} onNotice={setNotice} />}{isAdmin && <a className="permission-button" href="/apn-monitor" style={{ textDecoration: 'none' }}>APN 监控</a>}{isAdmin && <button className="permission-button" onClick={() => void openPermissions()}>权限设置</button>}{isAdmin && <button className="add-button" onClick={() => setShowAdd(true)}><span>+</span> 添加账号</button>}</div>
       </header>
 
       <div className="platform-layout" id="top">
