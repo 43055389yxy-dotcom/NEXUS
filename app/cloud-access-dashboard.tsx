@@ -160,6 +160,12 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
   }
 
   function launchApnLink(link: ApnQuickLink) {
+    try {
+      if (new URL(link.url).hostname.toLowerCase() === 'partnercentral.awspartner.com') {
+        window.open(link.url, '_blank', 'noopener,noreferrer');
+        return;
+      }
+    } catch { setNotice('链接地址不正确'); return; }
     const account = accounts.find((item) => item.groupId === selectedGroup) ?? accounts.find((item) => item.accountType === 'apn') ?? accounts.find((item) => groupNameFor(item.groupId) === 'APN');
     if (!account) { setNotice('请先在 APN 分组中添加 APN 账号'); return; }
     const params = new URLSearchParams({ accountId: account.id, roleName: 'TontianOperationsRole', destination: link.url });
