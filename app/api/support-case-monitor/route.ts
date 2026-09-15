@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
-import { requireIdentity } from '../../auth';
-import { proxyBroker } from '../../broker';
+import { requireIdentity } from '../auth';
+import { proxyBroker } from '../broker';
 
 export const runtime = 'nodejs';
 
