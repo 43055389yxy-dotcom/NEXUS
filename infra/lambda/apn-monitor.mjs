@@ -453,7 +453,9 @@ export async function getApnMonitorData() {
     accountStates.push({ ...account, lastRunAt: meta?.lastRunAt || "", status: meta?.status || "not_scanned", resourceCount: Number(meta?.resourceCount || 0) });
   }
   history.sort((a, b) => String(b.observedAt).localeCompare(String(a.observedAt)));
-  return { accounts: accountStates, resources, history: history.slice(0, 200), rules: await loadRules(), templates: APN_MONITOR_TEMPLATES, watchlist };
+  const visibleFields = new Set(["awsStage", "stage", "status"]);
+  const visibleHistory = history.map((item) => ({ ...item, changes: item.changes.filter((change) => visibleFields.has(change.field) && display(change.before) !== display(change.after)) })).filter((item) => item.changes.length > 0);
+  return { accounts: accountStates, resources, history: visibleHistory.slice(0, 200), rules: await loadRules(), templates: APN_MONITOR_TEMPLATES, watchlist };
 }
 
 export function isApnMonitorScheduledEvent(event) {
