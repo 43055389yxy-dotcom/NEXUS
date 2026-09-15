@@ -1,13 +1,13 @@
 import { NextResponse } from 'next/server';
 import { getChatGPTUser } from '../../chatgpt-auth';
 
-type LoginRequest = { accountId?: string; roleName?: string };
+type LoginRequest = { accountId?: string; roleName?: string; destination?: string };
 
 export async function GET(request: Request) {
   const user = await getChatGPTUser();
   if (!user) return NextResponse.json({ error: '请先登录 ITSM' }, { status: 401 });
   const url = new URL(request.url);
-  const result = await requestLogin({ accountId: url.searchParams.get('accountId') ?? '', roleName: url.searchParams.get('roleName') ?? '' }, user);
+  const result = await requestLogin({ accountId: url.searchParams.get('accountId') ?? '', roleName: url.searchParams.get('roleName') ?? '', destination: url.searchParams.get('destination') ?? '' }, user);
   if (result.error || !result.url) return NextResponse.json({ error: result.error ?? '连接失败' }, { status: result.status });
   return NextResponse.redirect(result.url, 302);
 }
@@ -39,7 +39,7 @@ async function requestLogin(body: LoginRequest, user: NonNullable<Awaited<Return
         'x-auth-role': user.role,
         'x-auth-permission': user.permissionId,
       },
-      body: JSON.stringify({ accountId: body.accountId, access: body.roleName === 'TontianAdminRole' ? 'admin' : 'operations' }),
+      body: JSON.stringify({ accountId: body.accountId, access: body.roleName === 'TontianAdminRole' ? 'admin' : 'operations', destination: body.destination }),
     });
     const payload = await brokerResponse.json() as { loginUrl?: string; error?: string };
     if (!brokerResponse.ok) return { error: payload.error ?? '连接失败', status: brokerResponse.status };

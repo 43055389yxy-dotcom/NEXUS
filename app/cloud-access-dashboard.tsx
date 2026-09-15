@@ -159,6 +159,13 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
     await persistApnLinks(apnLinks.filter((link) => link.id !== editingApnLink.id));
   }
 
+  function launchApnLink(link: ApnQuickLink) {
+    const account = accounts.find((item) => item.accountType === 'apn');
+    if (!account) { setNotice('请先在 APN 分组中添加 APN 账号'); return; }
+    const params = new URLSearchParams({ accountId: account.id, roleName: 'TontianOperationsRole', destination: link.url });
+    window.open(`/api/console-login?${params.toString()}`, '_blank', 'noopener,noreferrer');
+  }
+
   useEffect(() => {
     if (loading || billingGuideAccount) return;
     const account = accounts.find((item) => item.billingAccessReminderRequired && !promptedBillingAccess.current.has(item.id));
@@ -441,7 +448,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
                 </div>
                 <div className="apn-quick-links-grid">
                   {apnLinks.map((link) => (
-                    <article className="apn-quick-link-card" key={link.id} role="link" tabIndex={0} onClick={() => window.open(link.url, '_blank', 'noopener,noreferrer')} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); window.open(link.url, '_blank', 'noopener,noreferrer'); } }}>
+                    <article className="apn-quick-link-card" key={link.id} role="link" tabIndex={0} onClick={() => launchApnLink(link)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); launchApnLink(link); } }}>
                       <i>↗</i><strong>{link.name}</strong><span>{new URL(link.url).hostname}</span>
                       {isAdmin && <button type="button" onClick={(event) => { event.stopPropagation(); openApnLinkDialog(link); }}>编辑</button>}
                     </article>

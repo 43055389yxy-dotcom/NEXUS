@@ -250,10 +250,23 @@ async function createConsoleLogin(identity, body) {
   const tokenResponse = await fetch(`https://signin.aws.amazon.com/federation?Action=getSigninToken&Session=${encodeURIComponent(session)}`);
   if (!tokenResponse.ok) throw new Error("AWS federation token request failed");
   const { SigninToken } = await tokenResponse.json();
-  const destination = `https://${account.region}.console.aws.amazon.com/console/home?region=${account.region}`;
+  const defaultDestination = `https://${account.region}.console.aws.amazon.com/console/home?region=${account.region}`;
+  const destination = allowedConsoleDestination(body.destination) || defaultDestination;
   const loginUrl = `https://signin.aws.amazon.com/federation?Action=login&Issuer=${encodeURIComponent("Tontian AWS Access")}&Destination=${encodeURIComponent(destination)}&SigninToken=${encodeURIComponent(SigninToken)}`;
   console.log(JSON.stringify({ action: "console-login", accountId, roleName, at: new Date().toISOString() }));
   return { loginUrl, expiresIn: 3600, accountId, roleName };
+}
+
+function allowedConsoleDestination(value) {
+  if (!value) return "";
+  try {
+    const url = new URL(String(value));
+    const host = url.hostname.toLowerCase();
+    const allowed = url.protocol === "https:" && (host === "console.aws.amazon.com" || host.endsWith(".console.aws.amazon.com") || host === "partnercentral.awspartner.com");
+    return allowed ? url.toString() : "";
+  } catch {
+    return "";
+  }
 }
 
 async function listPermissions(identity) {
