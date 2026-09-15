@@ -160,7 +160,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
   }
 
   function launchApnLink(link: ApnQuickLink) {
-    const account = accounts.find((item) => item.accountType === 'apn');
+    const account = accounts.find((item) => item.groupId === selectedGroup) ?? accounts.find((item) => item.accountType === 'apn') ?? accounts.find((item) => groupNameFor(item.groupId) === 'APN');
     if (!account) { setNotice('请先在 APN 分组中添加 APN 账号'); return; }
     const params = new URLSearchParams({ accountId: account.id, roleName: 'TontianOperationsRole', destination: link.url });
     window.open(`/api/console-login?${params.toString()}`, '_blank', 'noopener,noreferrer');

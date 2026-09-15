@@ -236,26 +236,28 @@ export function SupportBillingPanel({ onNotice }: { onNotice: (message: string) 
         const next = { ...allSnapshots };
         let accounts = 0;
         let failures = 0;
+        let skipped = 0;
         for (const item of payers) {
           if (!openRef.current || version !== selectionVersion.current) return;
           try {
-            const value = await cache.load(item.accountId, true, historyMonth);
+            const value = await cache.load(item.accountId, true, historyMonth) as { snapshot: Snapshot; preview?: boolean; skipped?: boolean };
             next[item.accountId] = value.snapshot;
             accounts += value.snapshot.accounts.length;
+            if (value.skipped) skipped += 1;
             setAllSnapshots({ ...next });
           } catch { failures += 1; }
         }
         if (!openRef.current || version !== selectionVersion.current) return;
         setAllSnapshots(next);
         if (failures) setLoadError(`${failures} 个代付账号扫描失败，其他结果已更新。`);
-        onNotice(`全部扫描完成：成员账号 ${accounts}，失败代付 ${failures}`);
+        onNotice(`全部扫描完成：成员账号 ${accounts}，今日已跳过 ${skipped} 个代付，失败 ${failures} 个`);
         return;
       }
-      const value = await cache.load(accountId, true, historicalMonthFor(periodRef.current));
+      const value = await cache.load(accountId, true, historicalMonthFor(periodRef.current)) as { snapshot: Snapshot; preview?: boolean; skipped?: boolean };
       if (!openRef.current || version !== selectionVersion.current) return;
       setSnapshot(value.snapshot);
       setSelected([]);
-      onNotice(`扫描完成，共 ${value.snapshot.accounts.length} 个成员账号`);
+      onNotice(value.skipped ? '今日已同步，已跳过重复扫描' : `扫描完成，共 ${value.snapshot.accounts.length} 个成员账号`);
     } catch (error) {
       if (!openRef.current || version !== selectionVersion.current) return;
       const message = error instanceof Error ? error.message : '扫描失败';
@@ -269,21 +271,39 @@ export function SupportBillingPanel({ onNotice }: { onNotice: (message: string) 
     mutationRef.current = true;
     setMutating(true); setLoadError('');
     try {
-      const payload = await request({ action, accountId: selectedPayerId, period, targets: selected }) as { snapshot?: Snapshot; summary?: { created?: number; updated?: number; deleted?: number; repaired?: number; failed?: number } };
-      if (payload.snapshot) {
-        cacheRef.current?.put(selectedPayerId, { snapshot: payload.snapshot, preview });
-        setSnapshot(payload.snapshot);
-        const failed = payload.summary?.failed ?? 0;
-        setPayers((current) => current.map((item) => item.accountId === selectedPayerId ? {
-          ...item,
-          lastStatus: failed > 0 ? 'partial' : 'success',
-          lastMessage: failed > 0 ? `${failed} 个账号处理失败` : '',
-        } : item));
+      const groupedTargets = new Map<string, string[]>();
+      if (isAllPayers) {
+        for (const account of selectedRows) groupedTargets.set(account.payerId, [...(groupedTargets.get(account.payerId) ?? []), account.id]);
+      } else groupedTargets.set(selectedPayerId, selected);
+      type ActionPayload = { snapshot?: Snapshot; summary?: { created?: number; updated?: number; deleted?: number; repaired?: number; failed?: number } };
+      const results = await Promise.allSettled([...groupedTargets.entries()].map(async ([payerId, targets]) => ({ payerId, payload: await request({ action, accountId: payerId, period, targets }) as ActionPayload })));
+      const fulfilled = results.filter((result): result is PromiseFulfilledResult<{ payerId: string; payload: ActionPayload }> => result.status === 'fulfilled');
+      const rejected = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+      if (fulfilled.length === 0 && rejected[0]) throw rejected[0].reason;
+      const snapshotUpdates: Record<string, Snapshot> = {};
+      const statusUpdates = new Map<string, { snapshot: Snapshot; failed: number }>();
+      let completed = 0;
+      let failed = rejected.length;
+      for (const { value } of fulfilled) {
+        const summary = value.payload.summary;
+        failed += summary?.failed ?? 0;
+        completed += action === 'delete' ? summary?.deleted ?? 0 : (summary?.created ?? 0) + (summary?.updated ?? 0) + (summary?.repaired ?? 0);
+        if (!value.payload.snapshot) continue;
+        snapshotUpdates[value.payerId] = value.payload.snapshot;
+        statusUpdates.set(value.payerId, { snapshot: value.payload.snapshot, failed: summary?.failed ?? 0 });
+        cacheRef.current?.put(value.payerId, { snapshot: value.payload.snapshot, preview });
+        if (!isAllPayers) setSnapshot(value.payload.snapshot);
       }
+      if (Object.keys(snapshotUpdates).length > 0) setAllSnapshots((current) => ({ ...current, ...snapshotUpdates }));
+      setPayers((current) => current.map((item) => {
+        const update = statusUpdates.get(item.accountId);
+        if (!update) return item;
+        return { ...item, lastScanAt: update.snapshot.lastScanAt, lastStatus: update.failed > 0 ? 'partial' : 'success', lastMessage: update.failed > 0 ? `${update.failed} 个账号处理失败` : '' };
+      }));
       setSelected([]);
       setConfirm(null);
-      const completed = action === 'delete' ? payload.summary?.deleted ?? 0 : (payload.summary?.created ?? 0) + (payload.summary?.updated ?? 0) + (payload.summary?.repaired ?? 0);
-      onNotice(`${action === 'delete' ? '删除' : '同步'}完成：成功 ${completed}，失败 ${payload.summary?.failed ?? 0}`);
+      if (rejected.length > 0) setLoadError(`${rejected.length} 个代付账号处理失败，其余结果已保存。`);
+      onNotice(`${action === 'delete' ? '删除' : '同步'}完成：成功 ${completed}，失败 ${failed}`);
     } catch (error) { const message = error instanceof Error ? error.message : '操作失败'; setLoadError(message); onNotice(message); }
     finally { mutationRef.current = false; setMutating(false); }
   }
@@ -345,7 +365,7 @@ export function SupportBillingPanel({ onNotice }: { onNotice: (message: string) 
       return chargePriority || rowPriority(leftItem) - rowPriority(rightItem) || left.name.localeCompare(right.name, 'zh-CN');
     });
   const selectedRows = rows.filter((account) => selected.includes(account.id));
-  const selectableRows = rows.filter((account) => !isAllPayers && !readOnlyPeriod && safeToSync(periodItem(account).status));
+  const selectableRows = rows.filter((account) => !readOnlyPeriod && safeToSync(periodItem(account).status));
   const allSelectableSelected = selectableRows.length > 0 && selectableRows.every((account) => selected.includes(account.id));
   const syncable = !readOnlyPeriod && selectedRows.length > 0 && selectedRows.every((account) => safeToSync(periodItem(account).status));
   const deletable = !readOnlyPeriod && selectedRows.length > 0 && selectedRows.every((account) => canDelete(account, recentPeriod, billingMonth));
@@ -369,14 +389,13 @@ export function SupportBillingPanel({ onNotice }: { onNotice: (message: string) 
         <header className={styles.heading}><span>BILLING CONTROL</span><h2>Business Support+ 对账</h2><p>{preview ? '本地预览，不执行 AWS 操作' : '自动核对费用，只处理通过安全校验的账单项'}</p></header>
         <div className={styles.toolbar}><div><b>{isAllPayers ? '全部代付' : payer?.remark ?? '选择代付账号'}</b><small>{isAllPayers ? (allLastScanAt ? `汇总 ${payers.length} 个代付 · 最近扫描 ${formatTime(allLastScanAt)}${busy ? ' · 正在更新' : ''}` : busy ? '正在读取全部代付...' : '尚未读取') : snapshot?.lastScanAt ? `最后扫描 ${formatTime(snapshot.lastScanAt)}${loadingPayerId === selectedPayerId ? ' · 正在更新' : ''}` : busy ? '正在读取账单...' : '尚未扫描'}</small></div><nav aria-label="选择账期">{periodOptions.map((option) => <button key={option.value} disabled={mutating || loadingList || !selectedPayerId} title={option.month} aria-pressed={period === option.value} className={period === option.value ? styles.active : ''} onClick={() => void (isAllPayers ? selectAllPayers(option.value) : selectPayer(selectedPayerId, option.value))}>{option.label}</button>)}</nav><button disabled={busy || preview || !selectedPayerId} onClick={() => void scan()}>{busy ? '处理中...' : isAllPayers ? '刷新全部代付' : '重新扫描'}</button></div>
         <div className={styles.layout}>
-          <aside className={styles.payers}><input value={payerQuery} onChange={(event) => setPayerQuery(event.target.value)} placeholder="搜索代付账号" /><button disabled={mutating || loadingList || payers.length === 0} title="汇总查看并刷新所有代付账号" className={isAllPayers ? styles.selectedPayer : ''} onClick={() => void selectAllPayers()}><i>全</i><span><strong>全部代付</strong><small>{payers.length} 个代付 · 成员 {payers.reduce((total, item) => total + item.accountCount, 0)}</small></span><em data-state={allPayerState}>{payerStateText[allPayerState]}{allAttentionCount > 0 && ` ${allAttentionCount} 个`}</em></button>{visiblePayers.length === 0 ? <p>没有符合条件的代付账号</p> : visiblePayers.map((item) => { const state = payerState(item); const detail = state === 'pending' ? `${item.pendingCount} 个` : state === 'abnormal' && item.blockedCount > 0 ? `${item.blockedCount} 个` : ''; return <button key={item.accountId} disabled={mutating || loadingList} title={item.lastMessage || payerStateText[state]} className={item.accountId === selectedPayerId ? styles.selectedPayer : ''} onClick={() => void selectPayer(item.accountId)}><i>{item.remark.slice(0, 1).toUpperCase()}</i><span><strong>{item.remark}</strong><small>{item.accountId} · {item.groupName} · 成员 {item.accountCount}</small></span><em data-state={state}>{payerStateText[state]}{detail && ` ${detail}`}</em></button>; })}</aside>
+          <aside className={styles.payers}><input value={payerQuery} onChange={(event) => setPayerQuery(event.target.value)} placeholder="搜索代付账号" /><button disabled={mutating || loadingList || payers.length === 0} title="汇总查看并刷新所有代付账号" className={isAllPayers ? styles.selectedPayer : ''} onClick={() => void selectAllPayers()}><i>全</i><span><strong>全部代付</strong><small>{payers.length} 个代付 · 成员 {payers.reduce((total, item) => total + item.accountCount, 0)}</small></span><em data-state={allPayerState}>{payerStateText[allPayerState]}{allAttentionCount > 0 && ` ${allAttentionCount} 个`}</em></button>{visiblePayers.length === 0 ? <p>没有符合条件的代付账号</p> : visiblePayers.map((item) => { const state = payerState(item); const detail = state === 'pending' ? `${item.pendingCount} 个` : state === 'abnormal' && item.blockedCount > 0 ? `${item.blockedCount} 个` : ''; return <button key={item.accountId} disabled={mutating || loadingList} title={item.lastMessage || payerStateText[state]} className={item.accountId === selectedPayerId ? styles.selectedPayer : ''} onClick={() => void selectPayer(item.accountId)}><i>{item.remark.slice(0, 1).toUpperCase()}</i><span><strong>{item.remark}</strong><small>{item.accountId} · {item.groupName} · 成员 {item.accountCount}</small><small>同步时间：{item.lastScanAt ? formatTime(item.lastScanAt) : '尚未同步'}</small></span><em data-state={state}>{payerStateText[state]}{detail && ` ${detail}`}</em></button>; })}</aside>
           <main className={styles.content}>
             {loadError && <p role="alert" style={{ color: '#ff8994', fontSize: 12, overflowWrap: 'anywhere' }}>{snapshot ? '更新失败，已保留上次数据。' : '读取失败。'}{loadError}</p>}
             <div className={styles.stats}><button className={rowFilter === 'pending' ? styles.statActive : ''} onClick={() => { setRowFilter((current) => current === 'pending' ? 'all' : 'pending'); setSelected([]); }}><b>{summary.pending}</b>待处理</button><button className={rowFilter === 'all' ? styles.statActive : ''} onClick={() => { setRowFilter('all'); setSelected([]); }}><b>{sourceRows.length}</b>全部账号</button><button className={rowFilter === 'synced' ? styles.statActive : ''} onClick={() => { setRowFilter((current) => current === 'synced' ? 'all' : 'synced'); setSelected([]); }}><b>{summary.synced}</b>已同步</button><button className={rowFilter === 'blocked' ? styles.statActive : ''} onClick={() => { setRowFilter((current) => current === 'blocked' ? 'all' : 'blocked'); setSelected([]); }}><b>{summary.blocked}</b>已拦截</button><button className={rowFilter === 'enabled' ? styles.statActive : ''} onClick={() => { setRowFilter((current) => current === 'enabled' ? 'all' : 'enabled'); setSelected([]); }}><b>{summary.enabled}</b>自动同步开启</button><input value={memberQuery} onChange={(event) => setMemberQuery(event.target.value)} placeholder="搜索名称或账号 ID" /></div>
             <div className={styles.actions}><span aria-live="polite">{selected.length > 0 ? `已选择 ${selected.length} 个账号` : ''}</span><div><button disabled={busy || selectableRows.length === 0} onClick={() => setSelected(allSelectableSelected ? [] : selectableRows.map((account) => account.id))}>{allSelectableSelected ? '取消全选' : '一键选择'}</button><button disabled={busy || !deletable} onClick={() => setConfirm('delete')}>删除账单项</button><button className={styles.primary} disabled={busy || !syncable} onClick={() => setConfirm('sync')}>同步选中</button></div></div>
             {readOnlyPeriod && <p className={styles.readOnlyHint}>历史月份仅查看对账结果；AWS 只支持修改本月和上月账单。</p>}
-            {isAllPayers && <p className={styles.readOnlyHint}>全部代付模式用于汇总筛选和刷新；需要同步或删除时，请选择左侧对应的单个代付账号。</p>}
-            <div className={styles.tableWrap}><table><thead><tr><th>选择</th><th>成员账号</th><th>账期</th><th>账单组 / 同步资格</th><th>自动同步</th><th>最近同步</th><th>AWS Support</th><th>当前同步</th><th>差额</th><th>状态</th></tr></thead><tbody>{busy && sourceRows.length === 0 ? <tr><td colSpan={10}>正在读取...</td></tr> : rows.length === 0 ? <tr><td colSpan={10}>暂无扫描结果</td></tr> : rows.map((account) => { const item = periodItem(account); const selectable = !isAllPayers && !readOnlyPeriod && (safeToSync(item.status) || canDelete(account, recentPeriod, billingMonth)); const difference = item.aws === null ? null : item.aws - (item.synced ?? 0); const autoSync = accountAutoSyncEnabled(account, account.payerInfo); const lastSync = account.history?.find((entry) => entry.action !== '删除'); return <tr key={`${account.payerId}:${account.id}`} data-risk={risky(item.status)}><td><input type="checkbox" disabled={busy || !selectable} checked={selected.includes(account.id)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, account.id] : current.filter((value) => value !== account.id))} /></td><td><strong>{account.name}</strong><small>{account.id}{isAllPayers ? ` · ${account.payerRemark}` : ''}</small></td><td className={styles.billingMonth}>{billingMonthLabel}</td><td>{billingGroupLabel(account.payerInfo?.architecture, account.cma, item, readOnlyPeriod)}</td><td><button type="button" aria-pressed={autoSync} title={autoSync ? '每两天扫描时允许自动同步；人工同步始终可用' : '自动写入已关闭；扫描展示和人工同步不受影响'} className={`${styles.autoSyncToggle} ${autoSync ? styles.autoSyncOn : styles.autoSyncOff}`} disabled={busy || isAllPayers} onClick={() => void setAccountAutoSync(account, !autoSync)}>{autoSync ? '已开启' : '已关闭'}</button></td><td className={styles.lastSync}>{lastSync ? <><time dateTime={lastSync.date}>{formatTime(lastSync.date)}</time><small>{lastSync.action}</small></> : '暂无记录'}</td><td>{money(item.aws)}</td><td>{money(item.synced)}</td><td>{difference === null ? '—' : `${difference > 0 ? '+' : ''}${money(difference)}`}</td><td><span data-status={item.status} title={item.suggestion}>{statusText[item.status] ?? item.suggestion}</span></td></tr>; })}</tbody></table></div>
+            <div className={styles.tableWrap}><table><thead><tr><th>选择</th><th>成员账号</th><th>账期</th><th>账单组 / 同步资格</th><th>自动同步</th><th>最近同步</th><th>AWS Support</th><th>当前同步</th><th>差额</th><th>状态</th></tr></thead><tbody>{busy && sourceRows.length === 0 ? <tr><td colSpan={10}>正在读取...</td></tr> : rows.length === 0 ? <tr><td colSpan={10}>暂无扫描结果</td></tr> : rows.map((account) => { const item = periodItem(account); const selectable = !readOnlyPeriod && (safeToSync(item.status) || canDelete(account, recentPeriod, billingMonth)); const difference = item.aws === null ? null : item.aws - (item.synced ?? 0); const autoSync = accountAutoSyncEnabled(account, account.payerInfo); const lastSync = account.history?.find((entry) => entry.action !== '删除'); return <tr key={`${account.payerId}:${account.id}`} data-risk={risky(item.status)}><td><input type="checkbox" disabled={busy || !selectable} checked={selected.includes(account.id)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, account.id] : current.filter((value) => value !== account.id))} /></td><td><strong>{account.name}</strong><small>{account.id}{isAllPayers ? ` · ${account.payerRemark}` : ''}</small></td><td className={styles.billingMonth}>{billingMonthLabel}</td><td>{billingGroupLabel(account.payerInfo?.architecture, account.cma, item, readOnlyPeriod)}</td><td><button type="button" aria-pressed={autoSync} title={autoSync ? '每两天扫描时允许自动同步；人工同步始终可用' : '自动写入已关闭；扫描展示和人工同步不受影响'} className={`${styles.autoSyncToggle} ${autoSync ? styles.autoSyncOn : styles.autoSyncOff}`} disabled={busy || isAllPayers} onClick={() => void setAccountAutoSync(account, !autoSync)}>{autoSync ? '已开启' : '已关闭'}</button></td><td className={styles.lastSync}>{lastSync ? <><time dateTime={lastSync.date}>{formatTime(lastSync.date)}</time><small>{lastSync.action}</small></> : '暂无记录'}</td><td>{money(item.aws)}</td><td>{money(item.synced)}</td><td>{difference === null ? '—' : `${difference > 0 ? '+' : ''}${money(difference)}`}</td><td><span data-status={item.status} title={item.suggestion}>{statusText[item.status] ?? item.suggestion}</span></td></tr>; })}</tbody></table></div>
           </main>
         </div>
         {confirm && <div className={styles.confirmLayer}><section className={styles.confirm}><span>CONFIRM ACTION</span><h3>{confirm === 'delete' ? '删除账单项' : '同步 Support 费用'}</h3><p>{busy ? '正在读取 AWS 数据并修正账单周期，请不要关闭页面。' : `将处理 ${selected.length} 个成员账号。系统会重新读取 AWS 数据，通过安全校验后才会写入。`}</p><div><button disabled={busy} onClick={() => setConfirm(null)}>取消</button><button className={styles.primary} disabled={busy} onClick={() => void perform()}>{busy ? '处理中...' : '确认执行'}</button></div></section></div>}

@@ -5,8 +5,8 @@ type SnapshotMetadata = {
   accounts: unknown[];
 };
 
-export type CachedBillingSnapshot<T> = { snapshot: T; preview?: boolean };
-type RequestSnapshot<T> = (body: { action: 'snapshot' | 'scan'; accountId: string; period?: string }) => Promise<{ snapshot?: T; preview?: boolean }>;
+export type CachedBillingSnapshot<T> = { snapshot: T; preview?: boolean; skipped?: boolean; message?: string };
+type RequestSnapshot<T> = (body: { action: 'snapshot' | 'scan'; accountId: string; period?: string }) => Promise<{ snapshot?: T; preview?: boolean; skipped?: boolean; message?: string }>;
 const CACHE_TTL_MS = 2 * 24 * 60 * 60 * 1000;
 
 export function snapshotIsFresh(snapshot: SnapshotMetadata, now = Date.now(), historyMonth?: string) {
@@ -88,14 +88,14 @@ export class SupportBillingCache<T extends SnapshotMetadata> {
       if (!force) {
         const saved = await this.request({ action: 'snapshot', accountId, ...(historyMonth ? { period: historyMonth } : {}) });
         if (saved.snapshot && validSnapshot(saved.snapshot) && saved.snapshot.historyMonth === historyMonth) {
-          const value = { snapshot: saved.snapshot, preview: Boolean(saved.preview) };
+          const value = { snapshot: saved.snapshot, preview: Boolean(saved.preview), skipped: Boolean(saved.skipped), message: saved.message };
           this.put(accountId, value, historyMonth);
           if (snapshotIsFresh(value.snapshot, Date.now(), historyMonth)) return value;
         }
       }
       const scanned = await this.request({ action: 'scan', accountId, ...(historyMonth ? { period: historyMonth } : {}) });
       if (!scanned.snapshot || !validSnapshot(scanned.snapshot) || scanned.snapshot.historyMonth !== historyMonth || !Number.isFinite(Date.parse(scanned.snapshot.lastScanAt))) throw new Error('扫描未返回所选月份的有效账单数据');
-      const value = { snapshot: scanned.snapshot, preview: Boolean(scanned.preview) };
+      const value = { snapshot: scanned.snapshot, preview: Boolean(scanned.preview), skipped: Boolean(scanned.skipped), message: scanned.message };
       this.put(accountId, value, historyMonth);
       return value;
     }).catch((error: unknown) => {
