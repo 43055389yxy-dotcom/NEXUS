@@ -29,7 +29,7 @@ printf '%s' "$CURRENT_ENV" | jq --arg table "$TABLE_NAME" '{Variables:(. + {APN_
 aws lambda update-function-configuration --region "$REGION" --function-name "$FUNCTION_NAME" --environment file:///tmp/nexus-apn-monitor-environment.json >/dev/null
 aws lambda wait function-updated --region "$REGION" --function-name "$FUNCTION_NAME"
 
-RULE_ARN="$(aws events put-rule --region "$REGION" --name "$RULE_NAME" --schedule-expression 'cron(0 1,8 * * ? *)' --state ENABLED --description '北京时间每天 09:00 和 16:00 同步 APN 状态' --query RuleArn --output text)"
+RULE_ARN="$(aws events put-rule --region "$REGION" --name "$RULE_NAME" --schedule-expression 'rate(2 hours)' --state ENABLED --description '每两小时同步一次 APN 商机及券申请状态' --query RuleArn --output text)"
 cat >/tmp/nexus-apn-monitor-targets.json <<EOF
 [{"Id":"NexusApnMonitor","Arn":"${FUNCTION_ARN}","Input":"{\"source\":\"nexus.apn-monitor\",\"detail-type\":\"APN Status Monitor\"}"}]
 EOF

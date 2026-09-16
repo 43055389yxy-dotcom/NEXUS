@@ -364,7 +364,9 @@ async function saveRules(rules) {
 }
 
 function tracked(resourceItem) {
-  return { title: resourceItem.title, status: resourceItem.status, stage: resourceItem.stage, businessType: resourceItem.businessType, ...resourceItem.fields };
+  if (resourceItem.resourceType === "opportunity") return { awsStage: resourceItem.fields.awsStage || "" };
+  if (resourceItem.resourceType === "benefit_application") return { stage: resourceItem.fields.stage || "", status: resourceItem.fields.status || "" };
+  return {};
 }
 
 function differences(before, after) {
@@ -398,28 +400,87 @@ function notifyEnabled(item, changes, rules) {
   return rules.some((rule) => rule.enabled && rule.resourceType === item.resourceType && changes.some((change) => change.field === rule.field));
 }
 
-const FIELD_NAMES = { awsStage: "AWS 阶段", stage: "审批进度", status: "审批结果" };
-const STATUS_NAMES = {
-  Launched: "已上线", Approved: "已通过", Active: "进行中", Pending: "等待处理",
-  Submitted: "已提交", "In Progress": "处理中", ActionRequired: "需要补充资料",
-  Rejected: "未通过", Cancelled: "已取消", Closed: "已结束", Qualified: "已确认",
-  "Closed Lost": "已关闭", "AWS Closed Lost": "AWS 已关闭",
-  LAUNCHED: "已上线", APPROVED: "已通过", ACTIVE: "进行中", PENDING: "待处理",
-  SUBMITTED: "已提交", IN_REVIEW: "审核中", ACTION_REQUIRED: "需要补充资料",
-  REJECTED: "未通过", CANCELLED: "已取消", CLOSED: "已结束", QUALIFIED: "已确认",
-  CLOSED_LOST: "已关闭", BUSINESS_APPROVAL: "业务审批", FINANCE_APPROVAL: "财务审批",
-  VALIDATION: "资料校验", DRAFT: "草稿", COMPLETED: "已完成", FULFILLED: "已发放",
+const MONITORED_FIELDS = {
+  opportunity: new Set(["awsStage"]),
+  benefit_application: new Set(["stage", "status"]),
 };
-function friendly(value) { const text = String(value || ""); return STATUS_NAMES[text] || STATUS_NAMES[text.toUpperCase()] || display(value); }
+const FIELD_NAMES = { awsStage: "AWS 阶段", stage: "审批进度", status: "审批结果" };
+const AWS_STAGE_NAMES = {
+  PROSPECT: "第 1 阶段「初步商机」",
+  QUALIFIED: "第 2 阶段「确认有效」",
+  TECHNICAL_VALIDATION: "第 3 阶段「技术验证」",
+  BUSINESS_VALIDATION: "第 4 阶段「商务验证」",
+  COMMITTED: "第 5 阶段「确认推进」",
+  LAUNCHED: "第 6 阶段「已上线」",
+  CLOSED_LOST: "已关闭",
+  AWS_CLOSED_LOST: "AWS 已关闭",
+};
+const BENEFIT_STAGE_NAMES = {
+  CREATED: "第 1 环节「草稿待提交」",
+  DRAFT: "第 1 环节「草稿待提交」",
+  VALIDATION: "第 2 环节「资料校验」",
+  AWS_REVIEW: "第 3 环节「AWS 初审」",
+  TECH_REVIEW: "第 4 环节「技术审批」",
+  TECH_APPROVAL: "第 4 环节「技术审批」",
+  BUSINESS_REVIEW: "第 5 环节「业务审批」",
+  BUSINESS_APPROVAL: "第 5 环节「业务审批」",
+  FINANCE_REVIEW: "第 6 环节「财务审批」",
+  FINANCIAL_REVIEW: "第 6 环节「财务审批」",
+  FINANCE_APPROVAL: "第 6 环节「财务审批」",
+  PRE_APPROVAL: "第 7 环节「审批完成」",
+  COMPLETED: "第 7 环节「审批完成」",
+};
+const BENEFIT_STATUS_NAMES = {
+  PENDING_SUBMISSION: "等待提交",
+  PENDING: "等待处理",
+  SUBMITTED: "已提交",
+  IN_REVIEW: "审核中",
+  ACTION_REQUIRED: "需要补充资料",
+  APPROVED: "已通过",
+  REJECTED: "未通过",
+  CANCELED: "已取消",
+  CANCELLED: "已取消",
+  COMPLETED: "已完成",
+  FULFILLED: "已发放",
+};
+
+function statusKey(value) { return String(value || "").trim().replace(/[\s-]+/g, "_").toUpperCase(); }
+function friendly(item, field, value) {
+  const key = statusKey(value);
+  if (!key) return "暂无记录";
+  if (item.resourceType === "opportunity" && field === "awsStage") return AWS_STAGE_NAMES[key] || "其他商机阶段";
+  if (item.resourceType === "benefit_application" && field === "stage") return BENEFIT_STAGE_NAMES[key] || "其他审批环节";
+  if (item.resourceType === "benefit_application" && field === "status") return BENEFIT_STATUS_NAMES[key] || "其他审批状态";
+  return "状态已更新";
+}
+
+function resultText(item) {
+  const key = statusKey(item.resourceType === "opportunity" ? item.fields.awsStage : item.fields.status);
+  if (item.resourceType === "opportunity" && key === "LAUNCHED") return "商机已经上线，可以提交券申请。";
+  if (item.resourceType === "benefit_application" && key === "ACTION_REQUIRED") return "申请需要补充资料，请登录 Partner Central 查看要求。";
+  if (item.resourceType === "benefit_application" && key === "APPROVED") return "券申请已经审批通过。";
+  if (item.resourceType === "benefit_application" && key === "REJECTED") return "券申请未通过，请登录 Partner Central 查看原因。";
+  if (item.resourceType === "benefit_application" && key === "IN_REVIEW") return "券申请正在审核中。";
+  return "";
+}
 
 async function notify(changes) {
   if (!changes.length || !/^https:\/\/qyapi\.weixin\.qq\.com\/cgi-bin\/webhook\/send\?key=/.test(WEBHOOK_URL)) return;
   const lines = changes.map(({ item, changes: changed }) => {
-    const detail = changed.map((change) => `${FIELD_NAMES[change.field] || change.field}：${friendly(change.before)} → ${friendly(change.after)}`).join("；");
-    const launched = item.resourceType === "opportunity" && item.fields.awsStage === "Launched";
-    return `> ${item.title}（${item.externalId}）\n> ${detail}${launched ? "\n> 已上线，现在可以提交券申请了" : ""}`;
-  });
-  const response = await fetch(WEBHOOK_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ msgtype: "markdown", markdown: { content: [`**APN 状态有变化**`, `这次共有 ${changes.length} 项变化：`, ...lines].join("\n\n") } }) });
+    const allowed = MONITORED_FIELDS[item.resourceType] || new Set();
+    const detail = changed
+      .filter((change) => allowed.has(change.field))
+      .map((change) => `> ${FIELD_NAMES[change.field]}：${friendly(item, change.field, change.before)} → ${friendly(item, change.field, change.after)}`);
+    const heading = item.resourceType === "opportunity" ? "商机阶段已更新" : "券申请进度已更新";
+    const labels = item.resourceType === "opportunity"
+      ? [`> 商机名称：${item.title}`, `> 商机 ID：${item.externalId}`]
+      : [`> 券申请：${item.title}`, `> 券申请 ID：${item.externalId}`, `> 关联商机：${String(item.projectId || "").replace(/^opportunity:/, "") || "暂无记录"}`];
+    const result = resultText(item);
+    return [`> **${heading}**`, ...labels, ...detail, ...(result ? [`> 当前结果：${result}`] : [])].join("\n");
+  }).filter(Boolean);
+  const checkedAt = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
+  const content = [`**【WA 审批监控】发现 ${lines.length} 项状态更新**`, ...lines, `检查时间：${checkedAt}`].join("\n\n");
+  const response = await fetch(WEBHOOK_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ msgtype: "markdown", markdown: { content } }) });
   if (!response.ok) throw new Error(`微信群通知失败 (${response.status})`);
 }
 
