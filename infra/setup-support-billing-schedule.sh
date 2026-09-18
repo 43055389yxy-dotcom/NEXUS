@@ -15,7 +15,7 @@ cat >/tmp/nexus-support-billing-assume-role-policy.json <<'JSON'
 JSON
 aws iam put-role-policy --role-name "$EXECUTION_ROLE_NAME" --policy-name NexusSupportBillingAssumeRole --policy-document file:///tmp/nexus-support-billing-assume-role-policy.json
 
-RULE_ARN="$(aws events put-rule --name "$RULE_NAME" --schedule-expression 'rate(2 days)' --state ENABLED --description 'NEXUS Support billing check every 2 days, anchored around 12:00 Asia/Shanghai' --region "$REGION" --query RuleArn --output text)"
+RULE_ARN="$(aws events put-rule --name "$RULE_NAME" --schedule-expression 'cron(15 18 * * ? *)' --state ENABLED --description 'NEXUS Support billing check daily at 02:15 Asia/Shanghai' --region "$REGION" --query RuleArn --output text)"
 if ! aws lambda get-policy --function-name "$FUNCTION_NAME" --region "$REGION" --query Policy --output text 2>/dev/null | grep -q "$STATEMENT_ID"; then
   aws lambda add-permission --function-name "$FUNCTION_NAME" --statement-id "$STATEMENT_ID" --action lambda:InvokeFunction --principal events.amazonaws.com --source-arn "$RULE_ARN" --region "$REGION" >/dev/null
 fi
@@ -23,4 +23,4 @@ cat >/tmp/nexus-support-billing-targets.json <<JSON
 [{"Id":"nexus-support-billing-lambda","Arn":"$FUNCTION_ARN","Input":"{\"task\":\"support-billing\"}"}]
 JSON
 aws events put-targets --rule "$RULE_NAME" --targets file:///tmp/nexus-support-billing-targets.json --region "$REGION" >/dev/null
-echo "已配置：每天北京时间 02:15 独立检查，Support 对账每满 48 小时执行一次"
+echo "已配置：Support 对账每天北京时间 02:15 自动检查并同步一次"
