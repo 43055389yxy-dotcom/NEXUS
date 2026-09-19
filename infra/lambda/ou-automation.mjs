@@ -239,8 +239,10 @@ async function recordOperation({ account, mode, status, checked, moved, skipped,
   }
 }
 
-async function movementHistory() {
-  const accounts = await listAccounts();
+async function movementHistory(accountId = "") {
+  const availableAccounts = await listAccounts();
+  const accounts = accountId ? availableAccounts.filter((account) => account.accountId === accountId) : availableAccounts;
+  if (accountId && accounts.length === 0) fail("该账号不支持 OU 自动归位", 404);
   const remarks = new Map(accounts.map((account) => [account.accountId, account.remark]));
   const items = [];
   for (const account of accounts) {
@@ -393,7 +395,7 @@ export async function handleOuAutomationRequest({ method, body, identity }) {
   if (body.action === "discover") return discoverAccount(String(body.accountId || ""));
   if (body.action === "ou-options") return { discovery: publicDiscovery(await inspect(String(body.accountId || ""))) };
   if (body.action === "initialize") return initialize(body);
-  if (body.action === "history") return { history: await movementHistory() };
+  if (body.action === "history") return { history: await movementHistory(String(body.accountId || "")) };
   if (body.action === "run") return { result: await reconcile(String(body.accountId || ""), { allMembers: true, mode: "manual" }) };
   if (body.action === "run-all") return runScheduledOuAutomation();
   fail("Invalid OU automation action");

@@ -29,6 +29,7 @@ export const OuAutomationPanel = forwardRef<OuAutomationHandle, { onNotice: (mes
   const [restrictedSelection, setRestrictedSelection] = useState('');
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState('');
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
   const [previewMode, setPreviewMode] = useState(false);
 
@@ -151,10 +152,28 @@ export const OuAutomationPanel = forwardRef<OuAutomationHandle, { onNotice: (mes
   async function openHistory() {
     setHistoryOpen(true);
     setHistoryLoading(true);
+    setHistoryError('');
     try {
-      const payload = await request({ action: 'history' }) as { history?: HistoryEntry[] };
-      setHistoryEntries(payload.history ?? []);
-    } catch (error) { onNotice(error instanceof Error ? error.message : '操作记录读取失败'); }
+      const responses = await Promise.all(accounts.map(async (account) => {
+        try {
+          const payload = await request({ action: 'history', accountId: account.accountId }) as { history?: HistoryEntry[] };
+          return { history: payload.history ?? [], error: '' };
+        } catch (error) {
+          return { history: [] as HistoryEntry[], error: error instanceof Error ? error.message : '读取失败' };
+        }
+      }));
+      const successful = responses.filter((response) => !response.error);
+      if (accounts.length > 0 && successful.length === 0) throw new Error(responses[0]?.error || '操作记录读取失败');
+      const unique = new Map<string, HistoryEntry>();
+      for (const entry of successful.flatMap((response) => response.history)) unique.set(`${entry.payerAccountId}-${entry.occurredAt}-${entry.mode}`, entry);
+      setHistoryEntries([...unique.values()].sort((left, right) => right.occurredAt.localeCompare(left.occurredAt)));
+      if (successful.length < responses.length) onNotice(`${responses.length - successful.length} 个代付账号的记录读取失败`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '操作记录读取失败';
+      setHistoryEntries([]);
+      setHistoryError(message);
+      onNotice(message);
+    }
     finally { setHistoryLoading(false); }
   }
 
@@ -189,7 +208,7 @@ export const OuAutomationPanel = forwardRef<OuAutomationHandle, { onNotice: (mes
           </>}</section>
         </div>
         {mappingOpen && discovery && <div className={styles.confirmLayer}><section className={`${styles.confirmBox} ${styles.mappingBox}`}><span>OU MAPPING</span><h3>选择 OU 映射</h3><p>这里只保存映射，不会移动任何成员账号。同名 OU 请根据路径和 ID 选择。</p><section className={styles.mappingFields}><label><span>临时 OU</span><select value={temporarySelection} onChange={(event) => setTemporarySelection(event.target.value)}><option value="" disabled>请选择临时 OU</option>{mappingOus.map((ou) => <option key={`temporary-${ou.id}`} value={ou.id}>{ouOptionLabel(ou)}</option>)}{!hasNamedOu(mappingOus, '临时') && <option value="__create__">不存在，创建“临时”</option>}</select></label><label><span>禁止 SP/RI OU</span><select value={restrictedSelection} onChange={(event) => setRestrictedSelection(event.target.value)}><option value="" disabled>请选择禁止 OU</option>{mappingOus.map((ou) => <option key={`restricted-${ou.id}`} value={ou.id}>{ouOptionLabel(ou)}</option>)}{!hasNamedOu(mappingOus, '禁止 SP/RI') && <option value="__create__">不存在，创建“禁止 SP/RI”</option>}</select></label>{temporarySelection && restrictedSelection && !canSaveMapping && <em>临时和禁止 SP/RI 不能选择同一个 OU</em>}</section><div><button disabled={busy} onClick={() => setMappingOpen(false)}>取消</button><button className={styles.primary} disabled={busy || !canSaveMapping} onClick={() => void saveMapping()}>{busy ? '保存中...' : '确认映射'}</button></div></section></div>}
-        {historyOpen && <div className={styles.confirmLayer}><section className={styles.historyBox}><header><div><span>OPERATION LOG</span><h3>全部代付账号 · 操作记录</h3></div><button onClick={() => setHistoryOpen(false)}>×</button></header><div className={styles.historyBody}>{historyLoading ? <p>正在读取...</p> : historyEntries.length === 0 ? <p>暂无操作记录</p> : Object.entries(historyGroups).map(([date, entries]) => <section key={date}><h4>{date}</h4>{entries.map((entry) => <article key={`${entry.payerAccountId}-${entry.occurredAt}-${entry.mode}`}><div className={styles.historySummary}><time>{formatHistoryTime(entry.occurredAt)}</time><i data-mode={entry.mode}>{entry.mode === 'automatic' ? '自动任务' : '手动操作'}</i><b data-status={entry.status}>{entry.status === 'success' ? '成功' : '失败'}</b><p><strong>{entry.payerRemark}</strong>（{entry.payerAccountId}） · {entry.status === 'failed' && entry.checked === 0 && entry.moved === 0 && entry.skipped === 0 ? '未执行扫描' : `检查 ${entry.checked} · 移动 ${entry.moved} · 跳过 ${entry.skipped}`}</p></div>{entry.status === 'failed' && <em>{entry.message}</em>}{entry.movedAccounts.length > 0 && <div className={styles.movedAccounts}>{entry.movedAccounts.map((member) => <div key={`${entry.occurredAt}-${member.accountId}`}><span><strong>{member.name}</strong><small>{member.accountId}</small></span><p>{member.sourceParentName}<b>→</b>{member.destinationParentName}</p></div>)}</div>}</article>)}</section>)}</div></section></div>}
+        {historyOpen && <div className={styles.confirmLayer}><section className={styles.historyBox}><header><div><span>OPERATION LOG</span><h3>全部代付账号 · 操作记录</h3></div><button onClick={() => setHistoryOpen(false)}>×</button></header><div className={styles.historyBody}>{historyLoading ? <p>正在读取...</p> : historyError ? <p className={styles.historyError}>{historyError}</p> : historyEntries.length === 0 ? <p>暂无操作记录</p> : Object.entries(historyGroups).map(([date, entries]) => <section key={date}><h4>{date}</h4>{entries.map((entry) => <article key={`${entry.payerAccountId}-${entry.occurredAt}-${entry.mode}`}><div className={styles.historySummary}><time>{formatHistoryTime(entry.occurredAt)}</time><i data-mode={entry.mode}>{entry.mode === 'automatic' ? '自动任务' : '手动操作'}</i><b data-status={entry.status}>{entry.status === 'success' ? '成功' : '失败'}</b><p><strong>{entry.payerRemark}</strong><small>{entry.payerAccountId}</small><span>{entry.status === 'failed' && entry.checked === 0 && entry.moved === 0 && entry.skipped === 0 ? '未执行扫描' : `检查 ${entry.checked} · 移动 ${entry.moved} · 跳过 ${entry.skipped}`}</span></p></div>{entry.status === 'failed' && <em>{entry.message}</em>}{entry.movedAccounts.length > 0 && <div className={styles.movedAccounts}>{entry.movedAccounts.map((member) => <div key={`${entry.occurredAt}-${member.accountId}`}><span><strong>{member.name}</strong><small>{member.accountId}</small></span><p>{member.sourceParentName}<b>→</b>{member.destinationParentName}</p></div>)}</div>}</article>)}</section>)}</div></section></div>}
       </section>
     </div>}
   </>;
