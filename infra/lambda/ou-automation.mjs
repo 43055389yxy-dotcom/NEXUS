@@ -239,13 +239,22 @@ async function recordOperation({ account, mode, status, checked, moved, skipped,
   }
 }
 
-async function movementHistory(accountId) {
-  const account = await requireAccount(accountId);
-  const page = await dynamodb.send(new QueryCommand({ TableName: historyTable, KeyConditionExpression: "payerAccountId = :payer", ExpressionAttributeValues: { ":payer": { S: accountId } }, ScanIndexForward: false, Limit: 300 }));
+async function movementHistory() {
+  const accounts = await listAccounts();
+  const remarks = new Map(accounts.map((account) => [account.accountId, account.remark]));
+  const items = [];
+  for (const account of accounts) {
+    let ExclusiveStartKey;
+    do {
+      const page = await dynamodb.send(new QueryCommand({ TableName: historyTable, KeyConditionExpression: "payerAccountId = :payer", ExpressionAttributeValues: { ":payer": { S: account.accountId } }, ScanIndexForward: false, ExclusiveStartKey }));
+      items.push(...(page.Items || []));
+      ExclusiveStartKey = page.LastEvaluatedKey;
+    } while (ExclusiveStartKey);
+  }
   const cutoff = Date.now() - (2 * 24 * 60 * 60 * 1000);
-  return (page.Items || []).filter((item) => new Date(item.occurredAt?.S || 0).getTime() >= cutoff).map((item) => ({
-    payerAccountId: item.payerAccountId?.S || accountId,
-    payerRemark: item.payerRemark?.S || account.remark,
+  return items.filter((item) => new Date(item.occurredAt?.S || 0).getTime() >= cutoff).map((item) => ({
+    payerAccountId: item.payerAccountId?.S || "",
+    payerRemark: item.payerRemark?.S || remarks.get(item.payerAccountId?.S || "") || item.payerAccountId?.S || "未知代付",
     occurredAt: item.occurredAt?.S || "",
     mode: item.mode?.S || "automatic",
     status: item.status?.S || "success",
@@ -254,7 +263,7 @@ async function movementHistory(accountId) {
     skipped: Number(item.skipped?.N || 0),
     message: item.message?.S || "",
     movedAccounts: (() => { try { return JSON.parse(item.movedAccountsJson?.S || "[]"); } catch { return []; } })(),
-  }));
+  })).sort((left, right) => right.occurredAt.localeCompare(left.occurredAt)).slice(0, 500);
 }
 async function memberDirectory(value) {
   const ouNames = new Map(value.ous.map((ou) => [ou.id, ou.name]));
@@ -346,15 +355,29 @@ async function reconcile(accountId, { allMembers = false, mode = "automatic" } =
   }
 }
 
+async function initializeExistingOuMapping(account) {
+  const value = await inspect(account.accountId);
+  const missing = [];
+  if (!value.temporaryOu) missing.push(`“${temporaryName}”`);
+  if (!value.restrictedOu) missing.push(`“${restrictedName}”`);
+  if (missing.length > 0) fail(`未找到唯一的 ${missing.join(" 和 ")} OU，请先在页面选择 OU 映射`);
+  await configureFromInspection(value, { temporaryOuId: value.temporaryOu.id, restrictedOuId: value.restrictedOu.id });
+}
+
 export async function runScheduledOuAutomation() {
   const accounts = await listAccounts();
   const results = [];
   for (const account of accounts) {
     if (!account.configured) {
-      const message = "OU 尚未初始化";
-      await recordOperation({ account, mode: "automatic", status: "failed", checked: 0, moved: 0, skipped: 0, message });
-      results.push({ accountId: account.accountId, skipped: true, error: message });
-      continue;
+      try {
+        await initializeExistingOuMapping(account);
+      } catch (error) {
+        const message = `未执行扫描：${error.message || "OU 映射尚未配置"}`;
+        await recordRun(account.accountId, "failed", message);
+        await recordOperation({ account, mode: "automatic", status: "failed", checked: 0, moved: 0, skipped: 0, message });
+        results.push({ accountId: account.accountId, skipped: true, error: message });
+        continue;
+      }
     }
     try { results.push(await reconcile(account.accountId)); } catch (error) { results.push({ accountId: account.accountId, error: error.message || "Reconciliation failed" }); }
   }
@@ -370,7 +393,7 @@ export async function handleOuAutomationRequest({ method, body, identity }) {
   if (body.action === "discover") return discoverAccount(String(body.accountId || ""));
   if (body.action === "ou-options") return { discovery: publicDiscovery(await inspect(String(body.accountId || ""))) };
   if (body.action === "initialize") return initialize(body);
-  if (body.action === "history") return { history: await movementHistory(String(body.accountId || "")) };
+  if (body.action === "history") return { history: await movementHistory() };
   if (body.action === "run") return { result: await reconcile(String(body.accountId || ""), { allMembers: true, mode: "manual" }) };
   if (body.action === "run-all") return runScheduledOuAutomation();
   fail("Invalid OU automation action");
