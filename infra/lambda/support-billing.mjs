@@ -375,7 +375,33 @@ async function scanPma(payer, clients, periods) {
     }
     accounts.push(account);
   }
-  return { accounts, diagnostics: { billingViews: views.length, healthyBillingViews: healthy.length, viewWarnings: [...new Map(viewWarnings.map((warning) => [`${warning.period}:${warning.sourceAccountId}`, warning])).values()] } };
+  const discoveryPeriod = periods.find((period) => period.key === "current") || periods[0];
+  const discoveryViews = discoveryPeriod ? viewsByPeriod[discoveryPeriod.key] || [] : [];
+  const discoveryResults = discoveryPeriod ? results.filter((result) => result.period === discoveryPeriod.key) : [];
+  const accountDiscoveryRefreshed = Boolean(
+    discoveryPeriod
+      && discoveryViews.length > 0
+      && discoveryViews.every((view) => view.healthStatus?.statusCode === "HEALTHY")
+      && discoveryResults.length === discoveryViews.length
+      && discoveryResults.every((result) => !result.error),
+  );
+  let discoveryError = "";
+  if (!discoveryPeriod) discoveryError = "本次没有可扫描的账期";
+  else if (!discoveryViews.length) discoveryError = "未读取到可用于发现成员账号的账单视图";
+  else if (discoveryViews.some((view) => view.healthStatus?.statusCode !== "HEALTHY")) discoveryError = "部分账单视图状态异常，成员账号名单未完整刷新";
+  else if (discoveryResults.some((result) => result.error)) discoveryError = "部分账单视图查询失败，成员账号名单未完整刷新";
+  if (discoveryError) viewWarnings.push({ period: discoveryPeriod?.key || "current", sourceAccountId: payer.accountId, viewName: payer.remark, error: discoveryError });
+  return {
+    accounts,
+    diagnostics: {
+      billingViews: views.length,
+      healthyBillingViews: healthy.length,
+      scannedAccounts: accounts.length,
+      accountDiscoveryRefreshed,
+      discoveryError,
+      viewWarnings: [...new Map(viewWarnings.map((warning) => [`${warning.period}:${warning.sourceAccountId}:${warning.error}`, warning])).values()],
+    },
+  };
 }
 
 async function scanLegacy(payer, clients, periods) {
@@ -383,7 +409,14 @@ async function scanLegacy(payer, clients, periods) {
   const associations = {};
   await Promise.all(periods.map(async (period) => { associations[period.key] = await listAssociations(clients.conductor, period.billingPeriod); }));
   const names = {};
-  try { for (const item of await listOrganizationAccounts(clients.organizations)) if (item.Id) names[item.Id] = item.Name || item.Id; } catch {}
+  let organizationRefreshed = false;
+  let organizationError = "";
+  try {
+    for (const item of await listOrganizationAccounts(clients.organizations)) if (item.Id) names[item.Id] = item.Name || item.Id;
+    organizationRefreshed = true;
+  } catch (error) {
+    organizationError = `${error?.name || "OrganizationsError"}: ${error?.message || "读取组织账号失败"}`;
+  }
   const costs = {};
   await Promise.all(periods.map(async (period) => { costs[period.key] = await costPeriod(clients.cost, period, null, Object.keys(names).length === 0); }));
   const viewWarnings = Object.values(costs).filter((result) => result.error).map((result) => ({ period: result.period, sourceAccountId: payer.accountId, viewName: payer.remark, error: result.error }));
@@ -407,7 +440,23 @@ async function scanLegacy(payer, clients, periods) {
     }
     accounts.push(account);
   }
-  return { accounts, diagnostics: { organizationAccounts: Object.keys(names).length, billingGroups: Object.fromEntries(periods.map((period) => [period.key, groups[period.key].length])), viewWarnings } };
+  const discoveryPeriod = periods.find((period) => period.key === "current") || periods[0];
+  const discoveryCost = discoveryPeriod ? costs[discoveryPeriod.key] : null;
+  const accountDiscoveryRefreshed = organizationRefreshed || Boolean(discoveryCost && !discoveryCost.error);
+  const discoveryError = accountDiscoveryRefreshed ? "" : organizationError || discoveryCost?.error || "成员账号名单未完整刷新";
+  if (discoveryError) viewWarnings.push({ period: discoveryPeriod?.key || "current", sourceAccountId: payer.accountId, viewName: payer.remark, error: discoveryError });
+  return {
+    accounts,
+    diagnostics: {
+      organizationAccounts: Object.keys(names).length,
+      billingGroups: Object.fromEntries(periods.map((period) => [period.key, groups[period.key].length])),
+      scannedAccounts: accounts.length,
+      accountDiscoveryRefreshed,
+      discoveryError,
+      organizationWarning: organizationError,
+      viewWarnings,
+    },
+  };
 }
 
 function blankPeriod() { return { aws: null, synced: null, status: "query_error", suggestion: "尚未扫描", billingGroupMember: false, billingGroupArn: null, customLineItemArn: null, customLineItemName: null, managedCustomLineItems: [] }; }
@@ -631,11 +680,30 @@ function beijingDate(value = new Date()) {
 }
 
 function scannedSuccessfullyToday(payer) {
-  return Boolean(payer.snapshot && payer.lastScanAt && ["success", "partial"].includes(payer.lastStatus) && beijingDate(payer.lastScanAt) === beijingDate());
+  return Boolean(payer.snapshot && payer.lastScanAt && payer.lastStatus === "success" && beijingDate(payer.lastScanAt) === beijingDate());
 }
 
 function notificationText(value) {
   return String(value ?? "").replace(/[<>&`\r\n]/g, " ").trim().slice(0, 80);
+}
+
+function pendingSupportCount(snapshot, periodKey) {
+  const pendingStatuses = new Set(["create", "update", "period_range_error", "query_error", "data_pending", "zero_risk", "mapping_error", "duplicate_cli"]);
+  return (snapshot.accounts || []).filter((account) => pendingStatuses.has(account?.[periodKey]?.status)).length;
+}
+
+function supportScanDiagnostics(snapshot, previousSnapshot) {
+  const currentIds = new Set((snapshot?.accounts || []).map((account) => account.id));
+  const previousIds = new Set((previousSnapshot?.accounts || []).map((account) => account.id));
+  const refreshed = snapshot?.diagnostics?.accountDiscoveryRefreshed === true;
+  const comparable = refreshed && Array.isArray(previousSnapshot?.accounts);
+  return {
+    refreshed,
+    scannedAccounts: currentIds.size,
+    addedAccounts: comparable ? [...currentIds].filter((accountId) => !previousIds.has(accountId)).length : null,
+    removedAccounts: comparable ? [...previousIds].filter((accountId) => !currentIds.has(accountId)).length : null,
+    error: snapshot?.diagnostics?.discoveryError || "",
+  };
 }
 
 function supportSyncChanges(snapshot, periodKey, targets, beforeSync) {
@@ -662,18 +730,17 @@ function supportDataWarnings(payer, snapshot) {
 function supportSyncNotificationContents(payer, snapshot, periodKey, targets, automatic, summary, beforeSync) {
   const changes = supportSyncChanges(snapshot, periodKey, targets, beforeSync);
   const details = changes.map((change) => `${notificationText(payer.remark)} · ${notificationText(change.accountName)}：${change.previousAmount} → ${change.nextAmount}`);
-  const summaryParts = [
-    summary.created ? `新增 ${summary.created}` : "",
-    summary.updated ? `更新 ${summary.updated}` : "",
-    summary.repaired ? `修正 ${summary.repaired}` : "",
-    `失败 ${summary.failed}`,
-  ].filter(Boolean);
+  const warnings = supportDataWarnings(payer, snapshot);
+  const scanComplete = snapshot?.diagnostics?.accountDiscoveryRefreshed === true;
+  const summaryLine = [`待处理 ${summary.pending || 0}`, `已同步 ${summary.synced || 0}`, `失败 ${summary.failed || 0}`, summary.repaired ? `修正 ${summary.repaired}` : ""].filter(Boolean).join("｜");
   const time = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date());
-  const title = summary.failed ? "Support+ 对账异常" : changes.length ? "Support+ 费用更新" : "Support+ 对账完成";
+  const title = summary.failed || warnings.length ? "Support+ 对账异常" : changes.length ? "Support+ 费用更新" : "Support+ 对账完成";
   const header = [
     `**${title}｜${time}**`,
-    changes.length ? summaryParts.join("｜") : summary.failed ? `失败 ${summary.failed}｜请在网页查看` : "费用无变化｜数据正常",
+    summaryLine,
+    ...(changes.length ? [] : [scanComplete ? "扫描正常｜费用无变化" : "扫描不完整｜不能判断账号或费用是否有变化"]),
   ];
+  details.push(...warnings);
   const pages = []; let page = [];
   for (const detail of details) {
     if (page.length && (page.length >= 8 || Buffer.byteLength([...header, ...page, detail].join("\n"), "utf8") > 3500)) {
@@ -712,24 +779,26 @@ async function sendDailySupportSyncNotification(results) {
   if (webhook.protocol !== "https:" || webhook.hostname !== "qyapi.weixin.qq.com" || webhook.pathname !== "/cgi-bin/webhook/send") throw new Error("企业微信机器人地址不正确");
   const payerFailures = results.filter((item) => item.error);
   const totals = results.reduce((sum, item) => ({
-    created: sum.created + Number(item.created || 0),
-    updated: sum.updated + Number(item.updated || 0),
+    pending: sum.pending + Number(item.pending || 0),
+    synced: sum.synced + Number(item.synced || 0),
     repaired: sum.repaired + Number(item.repaired || 0),
     failed: sum.failed + Number(item.failed || 0),
-  }), { created: 0, updated: 0, repaired: 0, failed: 0 });
+  }), { pending: 0, synced: 0, repaired: 0, failed: 0 });
   const changes = results.flatMap((item) => (item.changes || []).map((change) => ({ ...change, payerName: item.payerName })));
   const warningLines = results.flatMap((item) => item.warnings || []);
   const time = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date());
   const failureLines = payerFailures.map((item) => `${notificationText(item.payerName || item.accountId)}：${notificationText(item.error)}`);
   const issueLines = [...failureLines, ...warningLines];
   const totalFailures = totals.failed + issueLines.length;
-  const hasChanges = totals.created + totals.updated + totals.repaired > 0;
+  const hasChanges = totals.synced > 0;
+  const fullyRefreshed = results.length > 0 && results.every((item) => !item.error && item.scan?.refreshed === true);
+  const addedAccounts = results.reduce((sum, item) => sum + Number(item.scan?.addedAccounts || 0), 0);
   const title = issueLines.length || totals.failed ? "Support+ 对账异常" : hasChanges ? "Support+ 费用更新" : "Support+ 对账完成";
   const summary = [
-    totals.created ? `新增 ${totals.created}` : "",
-    totals.updated ? `更新 ${totals.updated}` : "",
-    totals.repaired ? `修正 ${totals.repaired}` : "",
+    `待处理 ${totals.pending}`,
+    `已同步 ${totals.synced}`,
     `失败 ${totalFailures}`,
+    totals.repaired ? `修正 ${totals.repaired}` : "",
   ].filter(Boolean).join("｜");
   const changeLines = changes.slice(0, 12).map((change) => `${notificationText(change.payerName)} · ${notificationText(change.accountName)}：${change.previousAmount} → ${change.nextAmount}`);
   if (changes.length > changeLines.length) changeLines.push(`另有 ${changes.length - changeLines.length} 项费用更新，请在网页查看`);
@@ -737,7 +806,8 @@ async function sendDailySupportSyncNotification(results) {
   if (issueLines.length > visibleIssues.length) visibleIssues.push(`另有 ${issueLines.length - visibleIssues.length} 项数据异常，请在网页查看`);
   const content = [
     `**${title}｜${time}**`,
-    hasChanges ? summary : issueLines.length || totals.failed ? "部分账单数据未成功获取，异常来源已跳过同步" : "费用无变化｜数据正常",
+    summary,
+    ...(!hasChanges ? [issueLines.length || totals.failed || !fullyRefreshed ? "扫描不完整｜不能判断账号或费用是否有变化" : `扫描正常｜${addedAccounts ? `新增账号 ${addedAccounts} 个` : "无新增账号"}｜费用无变化`] : []),
     ...changeLines,
     ...visibleIssues,
   ].join("\n");
@@ -753,6 +823,7 @@ async function sendDailySupportSyncNotification(results) {
 
 async function syncAction(payer, periodKey, targets, automatic = false, persist = saveSnapshot, notify = true) {
   const clients = await clientsFor(payer);
+  const previousSnapshot = payer.snapshot;
   let snapshot = await scanWithClients(payer, clients, automatic ? ["current"] : ["current", "previous"]);
   const writeTargets = automatic ? new Set(snapshot.accounts.filter((account) => accountAutoSyncEnabled(payer, account.id)).map((account) => account.id)) : targets;
   const beforeSync = new Map(snapshot.accounts.filter((account) => !writeTargets || writeTargets.has(account.id)).map((account) => [account.id, { synced: account[periodKey].synced, status: account[periodKey].status }]));
@@ -761,11 +832,14 @@ async function syncAction(payer, periodKey, targets, automatic = false, persist 
   const result = await writeSync(payer, clients, snapshot, periodKey, writeTargets, automatic, repair.repaired, repair.failed, persist);
   const changes = supportSyncChanges(result.snapshot, periodKey, writeTargets, beforeSync);
   const warnings = supportDataWarnings(payer, result.snapshot);
+  result.summary.pending = pendingSupportCount(result.snapshot, periodKey);
+  result.summary.synced = changes.length;
+  const scan = supportScanDiagnostics(result.snapshot, previousSnapshot);
   if (notify) {
     try { await sendSupportSyncNotification(payer, result.snapshot, periodKey, writeTargets, automatic, result.summary, beforeSync); }
     catch (error) { console.error("Support billing WeCom notification failed", error); }
   }
-  return { ...result, changes, warnings };
+  return { ...result, changes, warnings, scan };
 }
 
 async function deleteAction(payer, periodKey, targets, persist = saveSnapshot) {
@@ -810,7 +884,7 @@ export async function runScheduledSupportBilling() {
   for (const payer of payers) {
     try {
       const value = await syncAction(payer, "current", null, true, saveSnapshot, false);
-      results.push({ accountId: payer.accountId, payerName: payer.remark, ...value.summary, changes: value.changes, warnings: value.warnings });
+      results.push({ accountId: payer.accountId, payerName: payer.remark, ...value.summary, changes: value.changes, warnings: value.warnings, scan: value.scan });
     }
     catch (error) { await markFailure(payer, error?.message || "自动对账失败"); results.push({ accountId: payer.accountId, payerName: payer.remark, error: error?.message || "自动对账失败" }); }
   }
