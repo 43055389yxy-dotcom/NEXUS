@@ -56,6 +56,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
   const [permissionUsers, setPermissionUsers] = useState<PermissionUser[]>([]);
   const [permissionQuery, setPermissionQuery] = useState('');
   const [dirtyPermissionUsers, setDirtyPermissionUsers] = useState<string[]>([]);
+  const [permissionSaveError, setPermissionSaveError] = useState('');
   const [apnLinks, setApnLinks] = useState<ApnQuickLink[]>([]);
   const [editingApnLink, setEditingApnLink] = useState<ApnQuickLink | null>(null);
   const [showApnLinkDialog, setShowApnLinkDialog] = useState(false);
@@ -193,6 +194,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
   async function openPermissions() {
     setShowPermissions(true);
     setSaving(true);
+    setPermissionSaveError('');
     try {
       const response = await fetch('/api/permissions', { cache: 'no-store' });
       const payload = await response.json() as { users?: PermissionUser[]; error?: string };
@@ -206,6 +208,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
   }
 
   function updateUserGroups(userId: string, nextGroupIds: string[]) {
+    setPermissionSaveError('');
     setPermissionUsers((current) => current.map((item) => item.userId === userId ? { ...item, groupIds: nextGroupIds, configured: true } : item));
     setDirtyPermissionUsers((current) => current.includes(userId) ? current : [...current, userId]);
   }
@@ -214,14 +217,27 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
     const targets = permissionUsers.filter((item) => dirtyPermissionUsers.includes(item.userId));
     if (targets.length === 0) return;
     setSaving(true);
+    setPermissionSaveError('');
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 15000);
     try {
-      const responses = await Promise.all(targets.map((target) => fetch('/api/permissions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: target.userId, userName: target.userName, targetRole: target.role, groupIds: target.groupIds }) })));
+      const responses = await Promise.all(targets.map((target) => fetch('/api/permissions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: target.userId, userName: target.userName, targetRole: target.role, groupIds: target.groupIds }), signal: controller.signal })));
       const failed = responses.find((response) => !response.ok);
-      if (failed) { const payload = await failed.json() as { error?: string }; throw new Error(payload.error ?? '权限保存失败'); }
+      if (failed) { const payload = await failed.json().catch(() => ({})) as { error?: string }; throw new Error(payload.error ?? '权限保存失败'); }
       setDirtyPermissionUsers([]);
-      setNotice('分组权限已保存');
-    } catch (error) { setNotice(error instanceof Error ? error.message : '权限保存失败'); }
-    finally { setSaving(false); }
+      setShowPermissions(false);
+      setPermissionQuery('');
+      setNotice(`已保存 ${targets.length} 位用户的分组权限`);
+    } catch (error) {
+      const message = error instanceof DOMException && error.name === 'AbortError'
+        ? '保存超时，请重试'
+        : error instanceof Error ? error.message : '权限保存失败';
+      setPermissionSaveError(message);
+      setNotice(message);
+    } finally {
+      window.clearTimeout(timeout);
+      setSaving(false);
+    }
   }
 
   useEffect(() => {
@@ -471,7 +487,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
 
       {showApnLinkDialog && <div className="dialog-layer" onMouseDown={(event) => event.target === event.currentTarget && setShowApnLinkDialog(false)}><section className="edit-dialog apn-link-dialog" role="dialog" aria-modal="true"><button className="dialog-close" onClick={() => setShowApnLinkDialog(false)}>×</button><h2>{editingApnLink ? '编辑链接' : '添加链接'}</h2><form onSubmit={(event) => { event.preventDefault(); void saveApnLink(); }}><label><span>链接名称</span><input autoFocus value={apnLinkName} onChange={(event) => setApnLinkName(event.target.value)} placeholder="例如：创建工单" maxLength={60} /></label><label><span>链接地址</span><input value={apnLinkUrl} onChange={(event) => setApnLinkUrl(event.target.value)} placeholder="https://" /></label><div className="dialog-actions apn-link-dialog-actions">{editingApnLink && <button type="button" className="delete-confirm" disabled={savingApnLink} onClick={() => void deleteApnLink()}>删除</button>}<span /><button type="button" className="cancel" disabled={savingApnLink} onClick={() => setShowApnLinkDialog(false)}>取消</button><button className="save" disabled={savingApnLink || !apnLinkName.trim() || !apnLinkUrl.trim()}>{savingApnLink ? '保存中...' : '保存'}</button></div></form></section></div>}
 
-      {showPermissions && <div className="dialog-layer" onMouseDown={(event) => event.target === event.currentTarget && setShowPermissions(false)}><section className="permission-dialog" role="dialog" aria-modal="true"><button className="dialog-close" onClick={() => setShowPermissions(false)}>×</button><div className="permission-heading"><span>ACCESS CONTROL</span><h2>分组权限</h2><p>勾选用户可以查看和进入的账号分组</p></div><div className="permission-tools"><span>ITSM 用户 {permissionUsers.length}</span><input value={permissionQuery} onChange={(event) => setPermissionQuery(event.target.value)} placeholder="搜索用户" /></div>{permissionUsers.length === 0 ? <div className="permission-empty">ITSM 中暂无启用用户</div> : <div className="permission-matrix-scroll"><table className="permission-matrix"><thead><tr><th>用户</th><th>未分组</th>{groups.map((group) => <th key={group.groupId}>{group.name}</th>)}<th>快捷操作</th></tr></thead><tbody>{permissionUsers.filter((item) => !permissionQuery.trim() || item.userName.toLowerCase().includes(permissionQuery.trim().toLowerCase())).map((item) => { const isSuperAdministrator = item.role === 'super_admin'; const isAdministrator = item.role === 'admin'; const canEdit = !isSuperAdministrator && (!isAdministrator || userRole === 'super_admin'); const allGroupIds = ['__ungrouped', ...groups.map((group) => group.groupId)]; const effectiveGroupIds = isSuperAdministrator || (isAdministrator && !item.configured) ? allGroupIds : item.groupIds; const allSelected = allGroupIds.every((groupId) => effectiveGroupIds.includes(groupId)); return <tr key={item.userId} className={`${isAdministrator || isSuperAdministrator ? 'administrator' : ''} ${dirtyPermissionUsers.includes(item.userId) ? 'changed' : ''}`}><th><span>{item.userName.slice(0, 1).toUpperCase()}</span><div><strong>{item.userName}</strong><small>{isSuperAdministrator ? '超级管理员 · 全部分组' : isAdministrator ? `管理员 · ${effectiveGroupIds.length} 个分组` : `${effectiveGroupIds.length} 个分组`}</small></div></th><td><input aria-label={`${item.userName} 未分组`} type="checkbox" disabled={!canEdit} checked={effectiveGroupIds.includes('__ungrouped')} onChange={() => updateUserGroups(item.userId, effectiveGroupIds.includes('__ungrouped') ? effectiveGroupIds.filter((value) => value !== '__ungrouped') : [...effectiveGroupIds, '__ungrouped'])} /></td>{groups.map((group) => <td key={group.groupId}><input aria-label={`${item.userName} ${group.name}`} type="checkbox" disabled={!canEdit} checked={effectiveGroupIds.includes(group.groupId)} onChange={() => updateUserGroups(item.userId, effectiveGroupIds.includes(group.groupId) ? effectiveGroupIds.filter((value) => value !== group.groupId) : [...effectiveGroupIds, group.groupId])} /></td>)}<td><button disabled={!canEdit} onClick={() => updateUserGroups(item.userId, allSelected ? [] : allGroupIds)}>{isSuperAdministrator ? '全部权限' : !canEdit ? '仅超级管理员' : allSelected ? '清空' : '全部'}</button></td></tr>; })}</tbody></table></div>}<div className="permission-footer"><span>{dirtyPermissionUsers.length > 0 ? `${dirtyPermissionUsers.length} 位用户待保存` : '权限已同步'}</span><div><button className="cancel" onClick={() => setShowPermissions(false)}>关闭</button><button className="save" disabled={saving || dirtyPermissionUsers.length === 0} onClick={() => void saveUserPermissions()}>{saving ? '保存中...' : '保存权限'}</button></div></div></section></div>}
+      {showPermissions && <div className="dialog-layer" onMouseDown={(event) => event.target === event.currentTarget && setShowPermissions(false)}><section className="permission-dialog" role="dialog" aria-modal="true"><button className="dialog-close" onClick={() => setShowPermissions(false)}>×</button><div className="permission-heading"><span>ACCESS CONTROL</span><h2>分组权限</h2><p>勾选用户可以查看和进入的账号分组</p></div><div className="permission-tools"><span>ITSM 用户 {permissionUsers.length}</span><input value={permissionQuery} onChange={(event) => setPermissionQuery(event.target.value)} placeholder="搜索用户" /></div>{permissionUsers.length === 0 ? <div className="permission-empty">ITSM 中暂无启用用户</div> : <div className="permission-matrix-scroll"><table className="permission-matrix"><thead><tr><th>用户</th><th>未分组</th>{groups.map((group) => <th key={group.groupId}>{group.name}</th>)}<th>快捷操作</th></tr></thead><tbody>{permissionUsers.filter((item) => !permissionQuery.trim() || item.userName.toLowerCase().includes(permissionQuery.trim().toLowerCase())).map((item) => { const isSuperAdministrator = item.role === 'super_admin'; const isAdministrator = item.role === 'admin'; const canEdit = !isSuperAdministrator && (!isAdministrator || userRole === 'super_admin'); const allGroupIds = ['__ungrouped', ...groups.map((group) => group.groupId)]; const effectiveGroupIds = isSuperAdministrator || (isAdministrator && !item.configured) ? allGroupIds : item.groupIds; const allSelected = allGroupIds.every((groupId) => effectiveGroupIds.includes(groupId)); return <tr key={item.userId} className={`${isAdministrator || isSuperAdministrator ? 'administrator' : ''} ${dirtyPermissionUsers.includes(item.userId) ? 'changed' : ''}`}><th><span>{item.userName.slice(0, 1).toUpperCase()}</span><div><strong>{item.userName}</strong><small>{isSuperAdministrator ? '超级管理员 · 全部分组' : isAdministrator ? `管理员 · ${effectiveGroupIds.length} 个分组` : `${effectiveGroupIds.length} 个分组`}</small></div></th><td><input aria-label={`${item.userName} 未分组`} type="checkbox" disabled={!canEdit} checked={effectiveGroupIds.includes('__ungrouped')} onChange={() => updateUserGroups(item.userId, effectiveGroupIds.includes('__ungrouped') ? effectiveGroupIds.filter((value) => value !== '__ungrouped') : [...effectiveGroupIds, '__ungrouped'])} /></td>{groups.map((group) => <td key={group.groupId}><input aria-label={`${item.userName} ${group.name}`} type="checkbox" disabled={!canEdit} checked={effectiveGroupIds.includes(group.groupId)} onChange={() => updateUserGroups(item.userId, effectiveGroupIds.includes(group.groupId) ? effectiveGroupIds.filter((value) => value !== group.groupId) : [...effectiveGroupIds, group.groupId])} /></td>)}<td><button disabled={!canEdit} onClick={() => updateUserGroups(item.userId, allSelected ? [] : allGroupIds)}>{isSuperAdministrator ? '全部权限' : !canEdit ? '仅超级管理员' : allSelected ? '清空' : '全部'}</button></td></tr>; })}</tbody></table></div>}<div className="permission-footer"><span className={permissionSaveError ? 'permission-error' : ''}>{permissionSaveError || (dirtyPermissionUsers.length > 0 ? `${dirtyPermissionUsers.length} 位用户待保存` : '权限已同步')}</span><div><button className="cancel" onClick={() => setShowPermissions(false)}>关闭</button><button className="save" disabled={saving || dirtyPermissionUsers.length === 0} onClick={() => void saveUserPermissions()}>{saving ? '保存中...' : dirtyPermissionUsers.length === 0 ? '已保存' : '保存权限'}</button></div></div></section></div>}
 
       {showAdd && (
         <div className="dialog-layer" onMouseDown={(event) => event.target === event.currentTarget && setShowAdd(false)}>
@@ -547,16 +563,28 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
 function toManagedAccount(account: AccountRecord): ManagedAccount { const remark = account.remark ?? account.name ?? account.accountId; const accountType: AccountType = account.accountType === 'pma' ? 'pma' : account.accountType === 'cma' ? 'cma' : account.accountType === 'apn' ? 'apn' : ''; return { id:account.accountId,name:remark,organization:remark,region:account.region,groupId:account.groupId ?? '',accountType,billingAccessConfirmedAt:account.billingAccessConfirmedAt ?? '',billingAccessReminderRequired:account.billingAccessReminderRequired === true,roleName:'TontianOperationsRole',access:'admin',environment:'production',favorite:false,lastUsed:'' }; }
 function formatAccountId(accountId:string){return accountId.replace(/(\d{4})(?=\d)/g,'$1 ')}
 function isTypingTarget(target:EventTarget|null){return target instanceof HTMLInputElement||target instanceof HTMLTextAreaElement||target instanceof HTMLSelectElement}
-function buildProvisionCommand(accountType: AccountType){if(accountType==='apn')return buildApnApiProvisionCommand();const organizationGuard=accountType==='pma'?'':`
-MANAGEMENT_ACCOUNT_ID=$(aws organizations describe-organization --query 'Organization.MasterAccountId' --output text 2>/dev/null) || {
-  echo "错误：当前账号未加入 AWS Organizations，无法作为代付管理账号接入"
-  exit 1
-}
+function buildProvisionCommand(accountType: AccountType){if(accountType==='apn')return buildApnApiProvisionCommand();const organizationDetection=`
+ACCOUNT_MODE="standalone"
+MANAGEMENT_ACCOUNT_ID=""
 
-if [ -z "$MANAGEMENT_ACCOUNT_ID" ] || [ "$MANAGEMENT_ACCOUNT_ID" = "None" ] || [ "$CURRENT_ACCOUNT_ID" != "$MANAGEMENT_ACCOUNT_ID" ]; then
-  echo "错误：当前账号不是 AWS Organization 管理账号，禁止接入"
-  exit 1
+if MANAGEMENT_ACCOUNT_ID=$(aws organizations describe-organization --query 'Organization.ManagementAccountId' --output text 2>/dev/null); then
+  if [ -z "$MANAGEMENT_ACCOUNT_ID" ] || [ "$MANAGEMENT_ACCOUNT_ID" = "None" ]; then
+    MANAGEMENT_ACCOUNT_ID=$(aws organizations describe-organization --query 'Organization.MasterAccountId' --output text 2>/dev/null || true)
+  fi
+  if [ -n "$MANAGEMENT_ACCOUNT_ID" ] && [ "$MANAGEMENT_ACCOUNT_ID" != "None" ]; then
+    if [ "$CURRENT_ACCOUNT_ID" = "$MANAGEMENT_ACCOUNT_ID" ]; then
+      ACCOUNT_MODE="organization-management"
+    else
+      ACCOUNT_MODE="organization-member"
+    fi
+  fi
 fi
+
+case "$ACCOUNT_MODE" in
+  organization-management) echo "检测结果：Organization 管理账号，安装完整组织功能" ;;
+  organization-member) echo "检测结果：Organization 成员账号，仅安装基础账号功能" ;;
+  *) echo "检测结果：无 Organization 的独立账号，仅安装基础账号功能" ;;
+esac
 `;const organizationFeatures=accountType==='pma'?AUTOMATION_ROLE_PROVISION_FRAGMENT:`${OU_AUTOMATION_PROVISION_FRAGMENT}\n${MFA_RECOVERY_PROVISION_FRAGMENT}`;const script=`set -e
 
 export AWS_PAGER=""
@@ -566,7 +594,7 @@ OPS_ACCOUNT_ID="${OPS_ACCOUNT_ID}"
 CURRENT_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
 if [ "$CURRENT_ACCOUNT_ID" = "$OPS_ACCOUNT_ID" ]; then echo "错误：不能在运维账号执行"; exit 1; fi
-${organizationGuard}
+${organizationDetection}
 
 cat >/tmp/tontian-operations-trust.json <<EOF_POLICY
 {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::\${OPS_ACCOUNT_ID}:role/TontianConsoleBrokerRole"},"Action":"sts:AssumeRole"}]}
@@ -593,19 +621,29 @@ aws iam attach-role-policy --role-name TontianOperationsRole --policy-arn arn:aw
 aws iam attach-role-policy --role-name TontianOperationsRole --policy-arn arn:aws:iam::aws:policy/AWSAccountManagementReadOnlyAccess
 aws iam attach-role-policy --role-name TontianOperationsRole --policy-arn arn:aws:iam::aws:policy/AWSCloudShellFullAccess
 aws iam attach-role-policy --role-name TontianOperationsRole --policy-arn arn:aws:iam::aws:policy/AWSPartnerCentralFullAccess
-cat >/tmp/tontian-organization-operations.json <<'EOF_ORG'
-{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["organizations:MoveAccount","organizations:InviteAccountToOrganization"],"Resource":"*"}]}
-EOF_ORG
-aws iam put-role-policy --role-name TontianOperationsRole --policy-name TontianOrganizationOperations --policy-document file:///tmp/tontian-organization-operations.json
 cat >/tmp/tontian-billing-preferences.json <<'EOF_BILLING_PREFERENCES'
 {"Version":"2012-10-17","Statement":[{"Sid":"ManageBillingPreferences","Effect":"Allow","Action":["billing:Get*","billing:List*","billing:Update*"],"Resource":"*"}]}
 EOF_BILLING_PREFERENCES
 aws iam put-role-policy --role-name TontianOperationsRole --policy-name TontianBillingPreferences --policy-document file:///tmp/tontian-billing-preferences.json
 aws iam attach-role-policy --role-name TontianAdminRole --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
 aws iam attach-role-policy --role-name TontianAdminRole --policy-arn arn:aws:iam::aws:policy/AWSPartnerCentralFullAccess
-	${organizationFeatures}
-	${SUPPORT_BILLING_PROVISION_FRAGMENT}
-	echo "账号接入完成：$CURRENT_ACCOUNT_ID"`;const bytes=new TextEncoder().encode(script);let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);const encoded=btoa(binary);return `printf '%s' '${encoded}' | base64 -d > /tmp/tontian-account-setup.sh && bash /tmp/tontian-account-setup.sh`;}
+
+if [ "$ACCOUNT_MODE" = "organization-management" ]; then
+cat >/tmp/tontian-organization-operations.json <<'EOF_ORG'
+{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["organizations:MoveAccount","organizations:InviteAccountToOrganization"],"Resource":"*"}]}
+EOF_ORG
+aws iam put-role-policy --role-name TontianOperationsRole --policy-name TontianOrganizationOperations --policy-document file:///tmp/tontian-organization-operations.json
+${organizationFeatures}
+${SUPPORT_BILLING_PROVISION_FRAGMENT}
+else
+  aws iam delete-role-policy --role-name TontianOperationsRole --policy-name TontianOrganizationOperations >/dev/null 2>&1 || true
+  aws iam delete-role-policy --role-name TontianOrganizationAutomationRole --policy-name TontianOrganizationAutomationPolicy >/dev/null 2>&1 || true
+  aws iam delete-role-policy --role-name TontianOrganizationAutomationRole --policy-name TontianMfaRecoveryPolicy >/dev/null 2>&1 || true
+  aws iam delete-role-policy --role-name TontianOrganizationAutomationRole --policy-name TontianSupportBillingPolicy >/dev/null 2>&1 || true
+  echo "已跳过：OU、成员账号移动、Billing Conductor、集中 Root 管理及成员账号邮箱管理"
+fi
+
+echo "账号接入完成：$CURRENT_ACCOUNT_ID（模式：$ACCOUNT_MODE）"`;const bytes=new TextEncoder().encode(script);let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);const encoded=btoa(binary);return `printf '%s' '${encoded}' | base64 -d > /tmp/tontian-account-setup.sh && bash /tmp/tontian-account-setup.sh`;}
 
 function buildApnApiProvisionCommand(){const script=`set -e
 

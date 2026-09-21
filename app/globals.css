@@ -307,7 +307,8 @@ button { color: inherit; }
 .permission-footer button { height: 40px; padding: 0 17px; border-radius: 9px; cursor: pointer; font-size: 9px; font-weight: 900; }
 .permission-footer .cancel { border: 1px solid var(--line); color: #8795a9; background: rgba(255,255,255,.025); }
 .permission-footer .save { border: 1px solid rgba(89,147,255,.36); color: white; background: linear-gradient(135deg,#347fff,#1e5bc7); }
-.permission-footer .save:disabled { opacity: .4; cursor: not-allowed; }
+.permission-footer .save:disabled { opacity: 1; color: #617086; border-color: rgba(121,153,202,.12); background: #111c2d; box-shadow: none; cursor: not-allowed; }
+.permission-footer .permission-error { color: #ff7585; }
 @media(max-width:700px) {
   .permission-dialog { width: 98vw; height: 92vh; max-height: 92vh; padding: 22px 14px 14px; }
   .permission-matrix th:first-child { width: 190px; }
