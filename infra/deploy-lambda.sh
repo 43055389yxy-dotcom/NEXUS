@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 AWS_REGION="${AWS_REGION:-us-east-1}"
 FUNCTION_NAME="${NEXUS_BROKER_FUNCTION_NAME:-TontianConsoleBroker}"
+FUNCTION_TIMEOUT="${NEXUS_BROKER_TIMEOUT:-900}"
 PACKAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/nexus-broker.XXXXXX")"
 
 cleanup() {
@@ -26,6 +27,25 @@ aws lambda update-function-code \
 aws lambda wait function-updated \
   --region "$AWS_REGION" \
   --function-name "$FUNCTION_NAME"
+
+current_timeout="$(aws lambda get-function-configuration \
+  --region "$AWS_REGION" \
+  --function-name "$FUNCTION_NAME" \
+  --query 'Timeout' \
+  --output text)"
+
+if [[ "$current_timeout" != "$FUNCTION_TIMEOUT" ]]; then
+  aws lambda update-function-configuration \
+    --region "$AWS_REGION" \
+    --function-name "$FUNCTION_NAME" \
+    --timeout "$FUNCTION_TIMEOUT" \
+    --no-cli-pager \
+    >/dev/null
+
+  aws lambda wait function-updated \
+    --region "$AWS_REGION" \
+    --function-name "$FUNCTION_NAME"
+fi
 
 read -r state update_status < <(
   aws lambda get-function-configuration \
