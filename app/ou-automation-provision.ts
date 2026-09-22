@@ -1,6 +1,6 @@
 export const AUTOMATION_ROLE_PROVISION_FRAGMENT = `
 cat >/tmp/tontian-ou-automation-trust.json <<EOF_AUTOMATION_TRUST
-{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::\${OPS_ACCOUNT_ID}:role/TontianConsoleBrokerRole"},"Action":"sts:AssumeRole"}]}
+{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":["arn:aws:iam::\${OPS_ACCOUNT_ID}:role/TontianConsoleBrokerRole","arn:aws:iam::\${LEGACY_OPS_ACCOUNT_ID}:role/TontianConsoleBrokerRole"]},"Action":"sts:AssumeRole"}]}
 EOF_AUTOMATION_TRUST
 
 if aws iam get-role --role-name TontianOrganizationAutomationRole >/dev/null 2>&1; then
