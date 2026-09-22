@@ -7,7 +7,7 @@ process.env.AWS_SDK_LOAD_CONFIG ||= "1";
 process.env.ACCOUNTS_TABLE ||= "TontianAwsAccessAccounts";
 process.env.GROUPS_TABLE ||= "TontianAwsAccessGroups";
 process.env.OU_HISTORY_TABLE ||= "TontianOuAutomationHistory";
-process.env.OPS_ACCOUNT_ID ||= "590184009438";
+process.env.OPS_ACCOUNT_ID ||= "075550799913";
 process.env.INTERNAL_API_KEY = "nexus-local-dev";
 
 const { handler } = await import("../infra/lambda/index.mjs");

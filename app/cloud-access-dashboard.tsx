@@ -27,7 +27,7 @@ function compareCmaSections(left: string, right: string) {
   if (right === '其他') return -1;
   return Number(left.slice(1)) - Number(right.slice(1));
 }
-const OPS_ACCOUNT_ID = '590184009438';
+const OPS_ACCOUNT_ID = '075550799913';
 const regions = ['us-east-1', 'us-west-2', 'ap-southeast-1', 'ap-northeast-1', 'eu-west-1'];
 const GROUP_DISPLAY_ORDER = ['老代付组', 'PMA', '技术账号', 'VPN'];
 

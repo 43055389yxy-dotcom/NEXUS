@@ -4,7 +4,7 @@ set -eu
 export AWS_PAGER=""
 export AWS_CLI_AUTO_PROMPT=off
 
-OPS_ACCOUNT_ID="590184009438"
+OPS_ACCOUNT_ID="075550799913"
 CALLER_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text --cli-connect-timeout 5 --cli-read-timeout 10)"
 if [ "$CALLER_ACCOUNT_ID" != "$OPS_ACCOUNT_ID" ]; then
   printf '%s\n' "Run this script from operations account $OPS_ACCOUNT_ID." >&2
