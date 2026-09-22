@@ -25,3 +25,9 @@ docker compose -f compose.production.yml up -d --build
 ```
 
 `.env.production` 由 Jenkins Credentials 或服务器安全文件提供，不应提交到 Git。
+
+Jenkins 节点还需要 `aws` 和 `zip`，以发布 Broker Lambda：
+
+```bash
+./infra/deploy-lambda.sh
+```
