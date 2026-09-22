@@ -28,6 +28,7 @@ function compareCmaSections(left: string, right: string) {
   return Number(left.slice(1)) - Number(right.slice(1));
 }
 const OPS_ACCOUNT_ID = '075550799913';
+const LEGACY_OPS_ACCOUNT_ID = '590184009438';
 const regions = ['us-east-1', 'us-west-2', 'ap-southeast-1', 'ap-northeast-1', 'eu-west-1'];
 const GROUP_DISPLAY_ORDER = ['老代付组', 'PMA', '技术账号', 'VPN'];
 
@@ -591,13 +592,14 @@ export AWS_PAGER=""
 export AWS_CLI_AUTO_PROMPT=off
 
 OPS_ACCOUNT_ID="${OPS_ACCOUNT_ID}"
+LEGACY_OPS_ACCOUNT_ID="${LEGACY_OPS_ACCOUNT_ID}"
 CURRENT_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
-if [ "$CURRENT_ACCOUNT_ID" = "$OPS_ACCOUNT_ID" ]; then echo "错误：不能在运维账号执行"; exit 1; fi
+if [ "$CURRENT_ACCOUNT_ID" = "$OPS_ACCOUNT_ID" ] || [ "$CURRENT_ACCOUNT_ID" = "$LEGACY_OPS_ACCOUNT_ID" ]; then echo "错误：不能在运维账号执行"; exit 1; fi
 ${organizationDetection}
 
 cat >/tmp/tontian-operations-trust.json <<EOF_POLICY
-{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::\${OPS_ACCOUNT_ID}:role/TontianConsoleBrokerRole"},"Action":"sts:AssumeRole"}]}
+{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":["arn:aws:iam::\${OPS_ACCOUNT_ID}:role/TontianConsoleBrokerRole","arn:aws:iam::\${LEGACY_OPS_ACCOUNT_ID}:role/TontianConsoleBrokerRole"]},"Action":"sts:AssumeRole"}]}
 EOF_POLICY
 
 ${ADMIN_ROLE_TRUST_FRAGMENT}
@@ -651,15 +653,16 @@ export AWS_PAGER=""
 export AWS_CLI_AUTO_PROMPT=off
 
 OPS_ACCOUNT_ID="${OPS_ACCOUNT_ID}"
+LEGACY_OPS_ACCOUNT_ID="${LEGACY_OPS_ACCOUNT_ID}"
 CURRENT_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
-if [ "$CURRENT_ACCOUNT_ID" = "$OPS_ACCOUNT_ID" ]; then
+if [ "$CURRENT_ACCOUNT_ID" = "$OPS_ACCOUNT_ID" ] || [ "$CURRENT_ACCOUNT_ID" = "$LEGACY_OPS_ACCOUNT_ID" ]; then
   echo "错误：不能在运维账号执行，请在 APN 账号中执行"
   exit 1
 fi
 
 cat >/tmp/tontian-apn-api-trust.json <<EOF_TRUST
-{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::\${OPS_ACCOUNT_ID}:role/TontianConsoleBrokerRole"},"Action":"sts:AssumeRole"}]}
+{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":["arn:aws:iam::\${OPS_ACCOUNT_ID}:role/TontianConsoleBrokerRole","arn:aws:iam::\${LEGACY_OPS_ACCOUNT_ID}:role/TontianConsoleBrokerRole"]},"Action":"sts:AssumeRole"}]}
 EOF_TRUST
 
 if aws iam get-role --role-name TontianOperationsRole >/dev/null 2>&1; then
