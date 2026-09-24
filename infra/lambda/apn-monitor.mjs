@@ -1,4 +1,5 @@
 import { BatchWriteItemCommand, DynamoDBClient, PutItemCommand, QueryCommand, ScanCommand } from "@aws-sdk/client-dynamodb";
+import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
 import { GetAwsOpportunitySummaryCommand, GetOpportunityCommand, ListOpportunitiesCommand, PartnerCentralSellingClient } from "@aws-sdk/client-partnercentral-selling";
 import { GetBenefitApplicationCommand, ListBenefitAllocationsCommand, ListBenefitApplicationsCommand, PartnerCentralBenefitsClient } from "@aws-sdk/client-partnercentral-benefits";
@@ -10,8 +11,11 @@ const GROUPS_TABLE = process.env.GROUPS_TABLE || "TontianAwsAccessGroups";
 const MONITOR_TABLE = process.env.APN_MONITOR_TABLE || "TontianApnMonitor";
 const APN_ACCOUNT_ID = process.env.APN_ACCOUNT_ID || "";
 const WEBHOOK_URL = process.env.WECOM_APN_WEBHOOK_URL || process.env.WECOM_SUPPORT_WEBHOOK_URL || "";
+const WEBHOOK_SECRET_ID = process.env.WECOM_APN_WEBHOOK_SECRET_ID || "";
 const db = new DynamoDBClient({ region: REGION });
+const secrets = new SecretsManagerClient({ region: REGION });
 const sts = new STSClient({ region: REGION });
+let webhookUrlPromise;
 
 const DEFAULT_APN_QUICK_LINKS = [
   { id: "support-cases", name: "创建工单", url: "https://partnercentral.awspartner.com/partnercentral2/s/zh-CN/support-cases" },
@@ -369,6 +373,24 @@ function tracked(resourceItem) {
   return {};
 }
 
+function emptyTrackedValue(value) {
+  return value == null || (typeof value === "string" && !value.trim()) || (Array.isArray(value) && value.length === 0);
+}
+
+export function stabilizeTrackedResource(item, previousTracked = {}) {
+  const fields = { ...item.fields };
+  let status = item.status;
+  let stage = item.stage;
+  for (const [field, value] of Object.entries(tracked(item))) {
+    const previousValue = previousTracked[field];
+    if (!emptyTrackedValue(value) || emptyTrackedValue(previousValue)) continue;
+    fields[field] = previousValue;
+    if (field === "status") status = previousValue;
+    if (field === "stage" || field === "awsStage") stage = previousValue;
+  }
+  return { ...item, status, stage, fields };
+}
+
 function differences(before, after) {
   return [...new Set([...Object.keys(before || {}), ...Object.keys(after || {})])].flatMap((field) => JSON.stringify(before?.[field] ?? "") === JSON.stringify(after?.[field] ?? "") ? [] : [{ field, before: before?.[field] ?? "", after: after?.[field] ?? "" }]);
 }
@@ -464,8 +486,33 @@ function resultText(item) {
   return "";
 }
 
+async function loadWebhookUrl() {
+  if (WEBHOOK_URL) return WEBHOOK_URL;
+  if (!WEBHOOK_SECRET_ID) throw new Error("企业微信机器人未配置");
+  if (!webhookUrlPromise) {
+    webhookUrlPromise = secrets.send(new GetSecretValueCommand({ SecretId: WEBHOOK_SECRET_ID })).then((result) => {
+      if (!result.SecretString) throw new Error("企业微信机器人密钥为空");
+      let value = result.SecretString.trim();
+      try {
+        const parsed = JSON.parse(value);
+        value = String(parsed.webhookUrl || parsed.url || "").trim();
+      } catch {}
+      return value;
+    }).catch((error) => {
+      webhookUrlPromise = undefined;
+      throw error;
+    });
+  }
+  return webhookUrlPromise;
+}
+
 async function notify(changes) {
-  if (!changes.length || !/^https:\/\/qyapi\.weixin\.qq\.com\/cgi-bin\/webhook\/send\?key=/.test(WEBHOOK_URL)) return;
+  if (!changes.length) return;
+  const webhookUrl = await loadWebhookUrl();
+  const webhook = new URL(webhookUrl);
+  if (webhook.protocol !== "https:" || webhook.hostname !== "qyapi.weixin.qq.com" || webhook.pathname !== "/cgi-bin/webhook/send" || !webhook.searchParams.get("key")) {
+    throw new Error("企业微信机器人地址不正确");
+  }
   const lines = changes.map(({ item, changes: changed }) => {
     const allowed = MONITORED_FIELDS[item.resourceType] || new Set();
     const detail = changed
@@ -480,8 +527,9 @@ async function notify(changes) {
   }).filter(Boolean);
   const checkedAt = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
   const content = [`**【WA 审批监控】发现 ${lines.length} 项状态更新**`, ...lines, `检查时间：${checkedAt}`].join("\n\n");
-  const response = await fetch(WEBHOOK_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ msgtype: "markdown", markdown: { content } }) });
-  if (!response.ok) throw new Error(`微信群通知失败 (${response.status})`);
+  const response = await fetch(webhook, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ msgtype: "markdown", markdown: { content } }) });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || Number(payload?.errcode) !== 0) throw new Error(payload?.errmsg || `微信群通知失败 (${response.status})`);
 }
 
 async function refreshAccount(account, rules, watchlist) {
@@ -489,26 +537,41 @@ async function refreshAccount(account, rules, watchlist) {
   const previousItems = await queryPartition(`ACCOUNT#${account.accountId}`);
   const previous = new Map(previousItems.filter((item) => item.sk.startsWith("RESOURCE#")).map((item) => [`${item.resourceType}#${item.externalId}`, item]));
   const resources = await collectWatchedResources(account, watchlist);
+  const stableResources = [];
   const history = [];
   const alertChanges = [];
-  for (const item of resources) {
-    const old = previous.get(`${item.resourceType}#${item.externalId}`);
-    const changed = old ? differences(parseJson(old.trackedJson), tracked(item)) : [];
+  for (const candidate of resources) {
+    const old = previous.get(`${candidate.resourceType}#${candidate.externalId}`);
+    if (candidate.fields.error) {
+      console.warn("APN monitor retained the last valid resource after a read failure", { resourceType: candidate.resourceType, externalId: candidate.externalId, error: candidate.fields.error });
+      continue;
+    }
+    const previousTracked = old ? parseJson(old.trackedJson) : {};
+    const currentTracked = tracked(candidate);
+    if (!old && Object.values(currentTracked).every(emptyTrackedValue)) {
+      console.warn("APN monitor skipped an empty initial snapshot", { resourceType: candidate.resourceType, externalId: candidate.externalId });
+      continue;
+    }
+    const item = stabilizeTrackedResource(candidate, previousTracked);
+    const retainedFields = Object.keys(currentTracked).filter((field) => emptyTrackedValue(currentTracked[field]) && !emptyTrackedValue(previousTracked[field]));
+    if (retainedFields.length) console.warn("APN monitor retained previous non-empty fields", { resourceType: item.resourceType, externalId: item.externalId, fields: retainedFields });
+    stableResources.push(item);
+    const changed = old ? differences(previousTracked, tracked(item)) : [];
     if (old && changed.length) {
       history.push({ item, changes: changed });
       if (notifyEnabled(item, changed, rules)) alertChanges.push({ item, changes: changed });
     }
   }
   await batchPut([
-    ...resources.map((item) => dbResource(item, observedAt)),
+    ...stableResources.map((item) => dbResource(item, observedAt)),
     ...history.map(({ item, changes }) => ({
       pk: { S: `ACCOUNT#${account.accountId}` }, sk: { S: `HISTORY#${observedAt}#${item.resourceType}#${item.externalId}` },
       accountId: { S: account.accountId }, resourceType: { S: item.resourceType }, externalId: { S: item.externalId },
       title: { S: item.title }, businessType: { S: item.businessType }, projectId: { S: item.projectId }, changesJson: { S: safeJson(changes) }, observedAt: { S: observedAt },
     })),
-    { pk: { S: `ACCOUNT#${account.accountId}` }, sk: { S: "META" }, accountId: { S: account.accountId }, accountName: { S: account.name }, lastRunAt: { S: observedAt }, resourceCount: { N: String(resources.length) }, status: { S: "ok" } },
+    { pk: { S: `ACCOUNT#${account.accountId}` }, sk: { S: "META" }, accountId: { S: account.accountId }, accountName: { S: account.name }, lastRunAt: { S: observedAt }, resourceCount: { N: String(stableResources.length) }, status: { S: "ok" } },
   ]);
-  return { account, resourceCount: resources.length, changes: alertChanges };
+  return { account, resourceCount: stableResources.length, changes: alertChanges };
 }
 
 export async function refreshApnMonitor() {
