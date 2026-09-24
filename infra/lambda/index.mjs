@@ -358,7 +358,8 @@ export const handler = async (event) => {
     if (method === "POST" && path === "/mfa-recovery") return response(200, await handleMfaRecoveryRequest({ method, body: parseBody(event), identity }));
     if ((method === "GET" || method === "POST") && path === "/support-billing") return response(200, await handleSupportBillingRequest({ method, body: method === "POST" ? parseBody(event) : {}, identity }));
     if ((method === "GET" || method === "POST") && path === "/apn-monitor") { requireAdmin(identity); return response(200, await handleApnMonitorRequest({ method, body: method === "POST" ? parseBody(event) : {} })); }
-    if ((method === "GET" || method === "POST") && path === "/credit-monitor") { requireAdmin(identity); return response(200, await handleCreditMonitorRequest({ method, body: method === "POST" ? parseBody(event) : {} })); }
+    if (method === "GET" && path === "/credit-monitor") return response(200, await handleCreditMonitorRequest({ method, body: {} }));
+    if (method === "POST" && path === "/credit-monitor") { requireAdmin(identity); return response(200, await handleCreditMonitorRequest({ method, body: parseBody(event) })); }
     if (method === "POST" && path === "/console-login") return response(200, await createConsoleLogin(identity, parseBody(event)));
     return response(404, { error: "Not found" });
   } catch (error) {

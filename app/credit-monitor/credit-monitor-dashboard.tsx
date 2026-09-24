@@ -66,7 +66,7 @@ function awsCreditsUrl(accountId: string) {
   return `/api/console-login?${params.toString()}`;
 }
 
-export function CreditMonitorDashboard() {
+export function CreditMonitorDashboard({ canSync }: { canSync: boolean }) {
   const [data, setData] = useState<Payload>(EMPTY);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -150,7 +150,7 @@ export function CreditMonitorDashboard() {
   return <main className={styles.shell}>
     <header className={styles.header}>
       <div><span>账单与成本管理</span><h1>代金券监控</h1><p>先看哪些账号有券，再点击账号查看明细</p></div>
-      <div className={styles.actions}><Link className={styles.secondary} href="/">返回账号管理</Link><button type="button" className={styles.primary} disabled={refreshing} onClick={() => void refresh()}>{refreshing ? '同步中...' : '立即同步'}</button></div>
+      <div className={styles.actions}><Link className={styles.secondary} href="/">返回账号管理</Link>{canSync && <button type="button" className={styles.primary} disabled={refreshing} onClick={() => void refresh()}>{refreshing ? '同步中...' : '立即同步'}</button>}</div>
     </header>
     {notice && <div className={styles.notice}>{notice}</div>}
 

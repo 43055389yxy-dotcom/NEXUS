@@ -83,7 +83,7 @@ function historyText(item: History) {
   return CHANGE_NAMES[change.type] || '状态已更新';
 }
 
-export function CreditAccountDashboard({ accountId }: { accountId: string }) {
+export function CreditAccountDashboard({ accountId, canSync }: { accountId: string; canSync: boolean }) {
   const [data, setData] = useState<Payload>(EMPTY);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -148,7 +148,7 @@ export function CreditAccountDashboard({ accountId }: { accountId: string }) {
   return <main className={styles.shell}>
     <header className={styles.detailHeader}>
       <div className={styles.breadcrumb}><Link href="/credit-monitor">代金券监控</Link><span>/</span><b>{account.name}</b></div>
-      <div className={styles.actions}><Link className={styles.secondary} href="/credit-monitor">返回账号列表</Link><button type="button" className={styles.primary} disabled={refreshing} onClick={() => void refresh()}>{refreshing ? '同步中...' : '同步这个账号'}</button></div>
+      <div className={styles.actions}><Link className={styles.secondary} href="/credit-monitor">返回账号列表</Link>{canSync && <button type="button" className={styles.primary} disabled={refreshing} onClick={() => void refresh()}>{refreshing ? '同步中...' : '同步这个账号'}</button>}</div>
     </header>
     {notice && <div className={styles.notice}>{notice}</div>}
 
