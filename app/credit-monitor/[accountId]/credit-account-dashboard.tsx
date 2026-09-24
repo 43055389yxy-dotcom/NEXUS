@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
 import styles from '../credit-monitor.module.css';
 
 type Money = { currencyCode: string; currencyAmount: number };
@@ -143,12 +142,12 @@ export function CreditAccountDashboard({ accountId, canSync }: { accountId: stri
   }
 
   if (loading) return <main className={styles.shell}><div className={styles.empty}>正在读取账号详情...</div></main>;
-  if (!account) return <main className={styles.shell}><div className={styles.missing}><h1>账号不在监控范围内</h1><Link className={styles.secondary} href="/credit-monitor">返回账号列表</Link></div></main>;
+  if (!account) return <main className={styles.shell}><div className={styles.missing}><h1>账号不在监控范围内</h1><button type="button" className={styles.secondary} onClick={() => window.location.assign('/credit-monitor')}>返回账号列表</button></div></main>;
 
   return <main className={styles.shell}>
     <header className={styles.detailHeader}>
-      <div className={styles.breadcrumb}><Link href="/credit-monitor">代金券监控</Link><span>/</span><b>{account.name}</b></div>
-      <div className={styles.actions}><Link className={styles.secondary} href="/credit-monitor">返回账号列表</Link>{canSync && <button type="button" className={styles.primary} disabled={refreshing} onClick={() => void refresh()}>{refreshing ? '同步中...' : '同步这个账号'}</button>}</div>
+      <div className={styles.breadcrumb}><button type="button" onClick={() => window.location.assign('/credit-monitor')}>代金券监控</button><span>/</span><b>{account.name}</b></div>
+      <div className={styles.actions}><button type="button" className={styles.secondary} onClick={() => window.location.assign('/credit-monitor')}>返回账号列表</button>{canSync && <button type="button" className={styles.primary} disabled={refreshing} onClick={() => void refresh()}>{refreshing ? '同步中...' : '同步这个账号'}</button>}</div>
     </header>
     {notice && <div className={styles.notice}>{notice}</div>}
 

@@ -698,9 +698,13 @@
   font-size: 12px;
 }
 
-.breadcrumb a {
+.breadcrumb button {
+  padding: 0;
+  border: 0;
   color: #65d8c9;
-  text-decoration: none;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
 }
 
 .breadcrumb b {
