@@ -257,14 +257,21 @@ async function refreshAccount(account) {
     return items.length ? [{ account, credit, changes: items }] : [];
   });
   const seen = new Set(credits.map((credit) => credit.creditId));
+  const observedAt = credits[0]?.observedAt || new Date().toISOString();
+  const missingExpired = [...previousCredits.entries()].flatMap(([creditId, previous]) => {
+    if (seen.has(creditId) || previous.state !== "active" || (daysUntil(previous.endDate, new Date(observedAt)) ?? 0) >= 0) return [];
+    const credit = { ...previous, state: "expired", observedAt };
+    return [{ account, credit, changes: [{ type: "status", field: "state", before: previous.state, after: "expired" }] }];
+  });
+  const allChanges = [...changes, ...missingExpired];
   const requests = [
     ...credits.map((credit) => ({ PutRequest: { Item: creditItem(account, credit) } })),
-    ...changes.map((change) => ({ PutRequest: { Item: historyItem(account, change.credit, change.changes) } })),
+    ...allChanges.map((change) => ({ PutRequest: { Item: historyItem(account, change.credit, change.changes) } })),
     ...[...previousCredits.keys()].filter((creditId) => !seen.has(creditId)).map((creditId) => ({ DeleteRequest: { Key: { pk: { S: `ACCOUNT#${account.accountId}` }, sk: { S: `CREDIT#${creditId}` } } } })),
-    { PutRequest: { Item: metaItem(account, credits[0]?.observedAt || new Date().toISOString(), credits) } },
+    { PutRequest: { Item: metaItem(account, observedAt, credits) } },
   ];
   await batchWrite(requests);
-  return { account, credits, changes, baselineCreated: !baselineExists };
+  return { account, credits, changes: allChanges, baselineCreated: !baselineExists };
 }
 
 async function saveFailure(account, error) {
@@ -297,30 +304,36 @@ async function loadWebhookUrl() {
   return webhookUrlPromise;
 }
 
-function changeText(change) {
+export function creditAlertKind(change) {
+  if (change.changes.some((item) => item.type === "new")) return "new";
+  if (change.changes.some((item) => item.field === "state" && item.after === "expired")) return "expired";
+  if (change.changes.some((item) => item.type === "expiring")) return "expiring";
+  return "";
+}
+
+function changeText(change, kind) {
   const { account, credit, changes } = change;
-  const types = new Set(changes.map((item) => item.type));
-  let detail = "状态已更新";
-  const balance = changes.find((item) => item.field === "estimatedAmount") || changes.find((item) => item.field === "remainingAmount");
+  const endDate = credit.endDate?.slice(0, 10) || "无到期日";
+  const accountText = `${account.groupName} · ${account.name}（${account.accountId}）`;
+  if (kind === "new") return `> **新到券｜${accountText}**\n> ${credit.description}\n> 到账 ${moneyText(credit.initialAmount)} · 预计余额 ${moneyText(credit.estimatedAmount)}\n> 到期 ${endDate}`;
+  if (kind === "expired") return `> **已到期｜${accountText}**\n> ${credit.description}\n> 预计余额 ${moneyText(credit.estimatedAmount)} · 到期 ${endDate}`;
   const expiring = changes.find((item) => item.type === "expiring");
-  if (types.has("new")) detail = `新增代金券，金额 ${moneyText(credit.initialAmount)}`;
-  else if (types.has("exhausted")) detail = "代金券已耗尽";
-  else if (expiring) detail = `距离到期仅剩 ${expiring.after} 天`;
-  else if (balance) detail = `预计剩余 ${moneyText(balance.before)} → ${moneyText(balance.after)}`;
-  else if (types.has("expiry_changed")) detail = `到期日变更为 ${credit.endDate.slice(0, 10) || "无"}`;
-  return `> **${account.groupName} · ${account.name}**\n> ${credit.description}\n> ${detail}`;
+  return `> **快到期｜${accountText}**\n> ${credit.description}\n> 剩余 ${expiring?.after ?? "-"} 天 · 预计余额 ${moneyText(credit.estimatedAmount)}\n> 到期 ${endDate}`;
 }
 
 async function notify(changes) {
-  if (!changes.length) return { sent: false, reason: "no_changes" };
+  const alerts = changes.map((change) => ({ change, kind: creditAlertKind(change) })).filter((item) => item.kind);
+  if (!alerts.length) return { sent: false, reason: "no_alerts" };
   const webhookUrl = await loadWebhookUrl();
   if (!webhookUrl) return { sent: false, reason: "not_configured" };
   const webhook = new URL(webhookUrl);
   if (webhook.protocol !== "https:" || webhook.hostname !== "qyapi.weixin.qq.com" || webhook.pathname !== "/cgi-bin/webhook/send" || !webhook.searchParams.get("key")) throw new Error("企业微信机器人地址不正确");
-  const lines = changes.slice(0, 20).map(changeText);
-  if (changes.length > lines.length) lines.push(`> 另有 ${changes.length - lines.length} 项变化，请在 NEXUS 查看`);
+  const counts = alerts.reduce((result, item) => ({ ...result, [item.kind]: result[item.kind] + 1 }), { new: 0, expiring: 0, expired: 0 });
+  const summary = [`新到券 ${counts.new}`, `快到期 ${counts.expiring}`, `已到期 ${counts.expired}`].filter((item) => !item.endsWith(" 0")).join(" · ");
+  const lines = alerts.slice(0, 20).map((item) => changeText(item.change, item.kind));
+  if (alerts.length > lines.length) lines.push(`> 另有 ${alerts.length - lines.length} 项提醒，请在 NEXUS 查看`);
   const checkedAt = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
-  const content = [`**【代金券监控】发现 ${changes.length} 项变化**`, ...lines, `检查时间：${checkedAt}`].join("\n\n");
+  const content = [`**【代金券提醒】${summary}**`, ...lines, `检查时间：${checkedAt}`].join("\n\n");
   const response = await fetch(webhook, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ msgtype: "markdown", markdown: { content } }), signal: AbortSignal.timeout(8000) });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || Number(payload?.errcode) !== 0) throw new Error(payload?.errmsg || `企业微信通知失败：HTTP ${response.status}`);

@@ -31,7 +31,7 @@ UPDATED_ENV="$(printf '%s' "$CURRENT_ENV" | jq -c --arg table "$TABLE_NAME" '{Va
 aws lambda update-function-configuration --region "$REGION" --function-name "$FUNCTION_NAME" --environment "$UPDATED_ENV" >/dev/null
 aws lambda wait function-updated --region "$REGION" --function-name "$FUNCTION_NAME"
 
-RULE_ARN="$(aws events put-rule --region "$REGION" --name "$RULE_NAME" --schedule-expression 'cron(15 1 * * ? *)' --state ENABLED --description 'NEXUS credit monitor daily at 09:15 Asia/Shanghai' --query RuleArn --output text)"
+RULE_ARN="$(aws events put-rule --region "$REGION" --name "$RULE_NAME" --schedule-expression 'rate(1 hour)' --state ENABLED --description 'NEXUS credit monitor every hour' --query RuleArn --output text)"
 cat >/tmp/nexus-credit-monitor-targets.json <<EOF
 [{"Id":"NexusCreditMonitor","Arn":"${FUNCTION_ARN}","Input":"{\"source\":\"nexus.credit-monitor\",\"detail-type\":\"Credit Monitor\"}"}]
 EOF
@@ -39,4 +39,4 @@ aws events put-targets --region "$REGION" --rule "$RULE_NAME" --targets file:///
 aws lambda remove-permission --region "$REGION" --function-name "$FUNCTION_NAME" --statement-id "$STATEMENT_ID" >/dev/null 2>&1 || true
 aws lambda add-permission --region "$REGION" --function-name "$FUNCTION_NAME" --statement-id "$STATEMENT_ID" --action lambda:InvokeFunction --principal events.amazonaws.com --source-arn "$RULE_ARN" >/dev/null
 
-echo "代金券监控已启用：每天北京时间 09:15 自动同步"
+echo "代金券监控已启用：每小时自动同步"

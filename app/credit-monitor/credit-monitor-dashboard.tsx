@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import styles from './credit-monitor.module.css';
 
@@ -29,6 +29,7 @@ type AccountState = {
 type Payload = { accounts: AccountState[]; credits: Credit[]; history: unknown[] };
 const EMPTY: Payload = { accounts: [], credits: [], history: [] };
 const PAGE_SIZE = 12;
+const AUTO_REFRESH_MS = 60 * 60 * 1000;
 const AWS_CREDITS_DESTINATION = 'https://console.aws.amazon.com/billing/home#/credits';
 
 function dateTime(value: string) {
@@ -39,6 +40,15 @@ function dateTime(value: string) {
 function dateOnly(value: string) {
   if (!value) return '无到期日';
   return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(value));
+}
+
+function countdown(target: number, now: number) {
+  if (!target) return '等待首次同步';
+  const seconds = Math.max(0, Math.ceil((target - now) / 1000));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const rest = seconds % 60;
+  return [hours, minutes, rest].map((value) => String(value).padStart(2, '0')).join(':');
 }
 
 function money(value: Money) {
@@ -76,6 +86,8 @@ export function CreditMonitorDashboard({ canSync }: { canSync: boolean }) {
   const [architecture, setArchitecture] = useState<'all' | 'cma' | 'legacy_payer'>('all');
   const [page, setPage] = useState(1);
   const [expandedAccountId, setExpandedAccountId] = useState('');
+  const [now, setNow] = useState(() => Date.now());
+  const autoLoading = useRef(false);
 
   const load = useCallback(async () => {
     try {
@@ -132,6 +144,18 @@ export function CreditMonitorDashboard({ canSync }: { canSync: boolean }) {
   const legacyCount = data.accounts.length - cmaCount;
   const activeAccountCount = useMemo(() => new Set(activeCredits.map((item) => item.accountId)).size, [activeCredits]);
   const lastRunAt = useMemo(() => data.accounts.map((item) => item.lastRunAt).filter(Boolean).sort().at(-1) || '', [data.accounts]);
+  const nextRefreshAt = lastRunAt ? Date.parse(lastRunAt) + AUTO_REFRESH_MS : 0;
+  useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(timer); }, []);
+  useEffect(() => {
+    const check = async () => {
+      if (!lastRunAt || Date.now() < Date.parse(lastRunAt) + AUTO_REFRESH_MS || autoLoading.current) return;
+      autoLoading.current = true;
+      try { await load(); } finally { autoLoading.current = false; }
+    };
+    void check();
+    const timer = window.setInterval(() => void check(), 15000);
+    return () => window.clearInterval(timer);
+  }, [lastRunAt, load]);
   const pageCount = Math.max(1, Math.ceil(accountRows.length / PAGE_SIZE));
   const visibleRows = accountRows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
@@ -149,7 +173,7 @@ export function CreditMonitorDashboard({ canSync }: { canSync: boolean }) {
 
   return <main className={styles.shell}>
     <header className={styles.header}>
-      <div className={styles.headerTitle}><h1>代金券监控</h1><b className={errorCount ? styles.headerProblem : styles.headerStatus}>{errorCount ? `${errorCount} 个异常` : '正常'}</b><span>最后同步 {dateTime(lastRunAt)} · 每天 09:15</span></div>
+      <div className={styles.headerTitle}><h1>代金券监控</h1><b className={errorCount ? styles.headerProblem : styles.headerStatus}>{errorCount ? `${errorCount} 个异常` : '正常'}</b><span>最后同步 {dateTime(lastRunAt)} · {refreshing ? '同步中...' : `${countdown(nextRefreshAt, now)} 后刷新`}</span></div>
       <div className={styles.actions}><button type="button" className={styles.secondary} onClick={() => window.location.assign('/')}>返回账号管理</button>{canSync && <button type="button" className={styles.primary} disabled={refreshing} onClick={() => void refresh()}>{refreshing ? '同步中...' : '立即同步'}</button>}</div>
     </header>
     {notice && <div className={styles.notice}>{notice}</div>}
