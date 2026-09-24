@@ -28,6 +28,7 @@ type AccountState = {
 };
 type Payload = { accounts: AccountState[]; credits: Credit[]; history: unknown[] };
 const EMPTY: Payload = { accounts: [], credits: [], history: [] };
+const PAGE_SIZE = 12;
 
 function dateTime(value: string) {
   if (!value) return '尚未同步';
@@ -61,7 +62,9 @@ export function CreditMonitorDashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [notice, setNotice] = useState('');
   const [query, setQuery] = useState('');
+  const [scope, setScope] = useState<'active' | 'all'>('active');
   const [architecture, setArchitecture] = useState<'all' | 'cma' | 'legacy_payer'>('all');
+  const [page, setPage] = useState(1);
 
   const load = useCallback(async () => {
     try {
@@ -108,56 +111,76 @@ export function CreditMonitorDashboard() {
         const nearestExpiry = activeCredits.map((credit) => credit.endDate).filter(Boolean).sort()[0] || '';
         return { account, activeCredits, nearestExpiry, remaining: totalMoney(activeCredits) };
       })
+      .filter((item) => scope === 'all' || item.activeCredits.length > 0)
       .sort((left, right) => Number(right.account.status === 'error') - Number(left.account.status === 'error') || right.activeCredits.length - left.activeCredits.length || left.account.name.localeCompare(right.account.name, 'zh-CN'));
-  }, [architecture, data.accounts, data.credits, query]);
+  }, [architecture, data.accounts, data.credits, query, scope]);
 
   const activeCredits = useMemo(() => data.credits.filter((item) => item.state === 'active'), [data.credits]);
   const errorCount = useMemo(() => data.accounts.filter((item) => item.status === 'error').length, [data.accounts]);
   const cmaCount = useMemo(() => data.accounts.filter((item) => item.architecture === 'cma').length, [data.accounts]);
   const legacyCount = data.accounts.length - cmaCount;
+  const activeAccountCount = useMemo(() => new Set(activeCredits.map((item) => item.accountId)).size, [activeCredits]);
   const lastRunAt = useMemo(() => data.accounts.map((item) => item.lastRunAt).filter(Boolean).sort().at(-1) || '', [data.accounts]);
+  const pageCount = Math.max(1, Math.ceil(accountRows.length / PAGE_SIZE));
+  const visibleRows = accountRows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  function chooseScope(next: 'active' | 'all') {
+    setScope(next);
+    setPage(1);
+  }
+
+  function chooseArchitecture(next: 'all' | 'cma' | 'legacy_payer') {
+    setArchitecture(next);
+    setPage(1);
+  }
 
   return <main className={styles.shell}>
     <header className={styles.header}>
-      <div><span>账单与成本管理</span><h1>代金券监控</h1><p>先选代付账号，再查看该账号的代金券明细</p></div>
+      <div><span>账单与成本管理</span><h1>代金券监控</h1><p>先看哪些账号有券，再点击账号查看明细</p></div>
       <div className={styles.actions}><Link className={styles.secondary} href="/">返回账号管理</Link><button type="button" className={styles.primary} disabled={refreshing} onClick={() => void refresh()}>{refreshing ? '同步中...' : '立即同步'}</button></div>
     </header>
     {notice && <div className={styles.notice}>{notice}</div>}
 
-    <section className={styles.summary}>
-      <div><span>监控账号</span><strong>{data.accounts.length}</strong><small>CMA {cmaCount} · 老代付 {legacyCount}</small></div>
-      <div><span>有效代金券</span><strong>{activeCredits.length}</strong><small>全部券 {data.credits.length}</small></div>
-      <div><span>有效券预计余额</span><strong>{totalMoney(activeCredits)}</strong><small>按 AWS 预计金额统计</small></div>
-      <div className={errorCount ? styles.summaryDanger : ''}><span>异常账号</span><strong>{errorCount}</strong><small>{errorCount ? '请进入账号查看' : '全部正常'}</small></div>
+    <section className={styles.overviewStrip}>
+      <div className={styles.mainBalance}><span>有效券预计余额</span><strong>{totalMoney(activeCredits)}</strong></div>
+      <div className={styles.overviewMetric}><strong>{activeCredits.length}</strong><span>张有效券</span></div>
+      <div className={styles.overviewMetric}><strong>{activeAccountCount}</strong><span>个账号有券</span></div>
+      <div className={errorCount ? styles.overviewProblem : styles.overviewHealth}><b>{errorCount ? `${errorCount} 个账号异常` : '同步状态正常'}</b><span>最后同步 {dateTime(lastRunAt)}</span></div>
     </section>
 
     <section className={styles.accountPanel}>
       <div className={styles.accountPanelTop}>
-        <div><h2>选择代付账号</h2><p>账号详情、历史券和变化记录均放在独立页面</p></div>
-        <span>最后同步：{dateTime(lastRunAt)} · 每天 09:15 自动同步</span>
+        <div><h2>账号列表</h2><p>默认只显示有有效券的账号</p></div>
+        <span>共监控 {data.accounts.length} 个账号 · 每天 09:15 自动同步</span>
       </div>
       <div className={styles.toolbar}>
-        <div className={styles.tabs}>
-          <button className={architecture === 'all' ? styles.selectedTab : ''} onClick={() => setArchitecture('all')}>全部 {data.accounts.length}</button>
-          <button className={architecture === 'cma' ? styles.selectedTab : ''} onClick={() => setArchitecture('cma')}>CMA {cmaCount}</button>
-          <button className={architecture === 'legacy_payer' ? styles.selectedTab : ''} onClick={() => setArchitecture('legacy_payer')}>老代付 {legacyCount}</button>
+        <div className={styles.scopeTabs}>
+          <button className={scope === 'active' ? styles.selectedScope : ''} onClick={() => chooseScope('active')}>有有效券 {activeAccountCount}</button>
+          <button className={scope === 'all' ? styles.selectedScope : ''} onClick={() => chooseScope('all')}>全部账号 {data.accounts.length}</button>
         </div>
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索账号名称或 ID" />
+        <i />
+        <div className={styles.tabs}>
+          <button className={architecture === 'all' ? styles.selectedTab : ''} onClick={() => chooseArchitecture('all')}>全部类型</button>
+          <button className={architecture === 'cma' ? styles.selectedTab : ''} onClick={() => chooseArchitecture('cma')}>CMA {cmaCount}</button>
+          <button className={architecture === 'legacy_payer' ? styles.selectedTab : ''} onClick={() => chooseArchitecture('legacy_payer')}>老代付 {legacyCount}</button>
+        </div>
+        <input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="搜索账号名称或 ID" />
       </div>
 
-      {loading ? <div className={styles.empty}>正在读取...</div> : accountRows.length === 0 ? <div className={styles.empty}>没有匹配的代付账号</div> : <div className={styles.accountGrid}>
-        {accountRows.map(({ account, activeCredits: accountActiveCredits, nearestExpiry, remaining }) => <Link className={styles.accountCard} href={`/credit-monitor/${account.accountId}`} key={account.accountId}>
-          <div className={styles.cardTitle}><b className={account.architecture === 'cma' ? styles.cma : styles.legacy}>{account.groupName}</b><span className={account.status === 'error' ? styles.errorStatus : styles.okStatus}>{account.status === 'error' ? '同步异常' : account.status === 'ok' ? '正常' : '未同步'}</span></div>
-          <h3>{account.name}</h3>
-          <code>{account.accountId}</code>
-          <div className={styles.cardMetrics}>
-            <div><span>有效券</span><strong>{accountActiveCredits.length}</strong><small>共 {account.creditCount} 张</small></div>
-            <div><span>预计余额</span><strong>{remaining}</strong><small>仅统计有效券</small></div>
-          </div>
-          <div className={styles.cardFooter}><span>{nearestExpiry ? `最近到期 ${dateOnly(nearestExpiry)}` : '暂无有效券'}</span><b>查看详情 →</b></div>
-          {account.error && <p className={styles.cardError}>{account.error}</p>}
-        </Link>)}
-      </div>}
+      {loading ? <div className={styles.empty}>正在读取...</div> : accountRows.length === 0 ? <div className={styles.empty}>没有匹配的代付账号</div> : <>
+        <div className={styles.accountList}>
+          <div className={styles.listHead}><span>账号</span><span>类型</span><span>有效券</span><span>预计余额</span><span>最近到期</span><span /></div>
+          {visibleRows.map(({ account, activeCredits: accountActiveCredits, nearestExpiry, remaining }) => <Link className={styles.accountRow} href={`/credit-monitor/${account.accountId}`} key={account.accountId}>
+            <div className={styles.accountName}><strong>{account.name}</strong><small>{account.accountId}{account.error ? ` · ${account.error}` : ''}</small></div>
+            <b className={account.architecture === 'cma' ? styles.cma : styles.legacy}>{account.groupName}</b>
+            <div className={styles.countCell}><strong>{accountActiveCredits.length}</strong><small>全部 {account.creditCount}</small></div>
+            <strong className={styles.amountCell}>{remaining}</strong>
+            <span className={styles.expiryCell}>{nearestExpiry ? dateOnly(nearestExpiry) : '—'}</span>
+            <b className={styles.rowArrow}>›</b>
+          </Link>)}
+        </div>
+        {pageCount > 1 && <div className={styles.pagination}><button disabled={page === 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><span>{page} / {pageCount}</span><button disabled={page === pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div>}
+      </>}
     </section>
   </main>;
 }

@@ -100,6 +100,77 @@
   font-size: 12px;
 }
 
+.overviewStrip {
+  width: min(1600px, 100%);
+  min-height: 98px;
+  display: grid;
+  grid-template-columns: minmax(280px, 1.4fr) 180px 180px minmax(240px, 1fr);
+  align-items: stretch;
+  margin: 0 auto 18px;
+  overflow: hidden;
+  border: 1px solid #1d3b59;
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(15, 38, 58, .96), rgba(8, 24, 38, .96));
+}
+
+.overviewStrip > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 17px 22px;
+  border-left: 1px solid #1a344e;
+}
+
+.overviewStrip > div:first-child {
+  border-left: 0;
+}
+
+.mainBalance span,
+.overviewMetric span,
+.overviewHealth span,
+.overviewProblem span {
+  color: #6f89a3;
+  font-size: 11px;
+}
+
+.mainBalance strong {
+  display: block;
+  margin-top: 5px;
+  color: #f2f7ff;
+  font-size: 30px;
+}
+
+.overviewMetric {
+  align-items: center;
+  text-align: center;
+}
+
+.overviewMetric strong {
+  color: #eaf2ff;
+  font-size: 25px;
+}
+
+.overviewHealth,
+.overviewProblem {
+  align-items: flex-end;
+  text-align: right;
+}
+
+.overviewHealth b,
+.overviewProblem b {
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+
+.overviewHealth b {
+  color: #71dfbd;
+}
+
+.overviewProblem b {
+  color: #ff9aa3;
+}
+
 .summary,
 .detailSummary {
   display: grid;
@@ -188,6 +259,34 @@
   background: #091827;
 }
 
+.scopeTabs {
+  display: flex;
+  gap: 7px;
+}
+
+.scopeTabs button {
+  padding: 9px 13px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: #8097ae;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.scopeTabs button.selectedScope {
+  border-color: #34b8aa;
+  color: #d3fff8;
+  background: #12403f;
+}
+
+.toolbar > i {
+  width: 1px;
+  height: 24px;
+  background: #263d55;
+}
+
 .tabs {
   display: flex;
   gap: 7px;
@@ -214,6 +313,7 @@
 
 .toolbar input {
   width: min(360px, 36vw);
+  margin-left: auto;
   padding: 10px 12px;
   border: 1px solid #29425d;
   border-radius: 9px;
@@ -225,6 +325,95 @@
 
 .toolbar input:focus {
   border-color: #3b82d0;
+}
+
+.accountList {
+  min-width: 820px;
+}
+
+.listHead,
+.accountRow {
+  display: grid;
+  grid-template-columns: minmax(240px, 1.6fr) 100px 110px 160px 145px 30px;
+  gap: 16px;
+  align-items: center;
+  padding: 0 22px;
+}
+
+.listHead {
+  height: 42px;
+  color: #667f99;
+  background: #071522;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.accountRow {
+  min-height: 68px;
+  border-top: 1px solid #142b42;
+  color: #aabdd2;
+  text-decoration: none;
+  transition: background .12s ease;
+}
+
+.accountRow:hover {
+  background: #0d2235;
+}
+
+.accountName {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.accountName strong {
+  overflow: hidden;
+  color: #e8f0fb;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accountName small {
+  overflow: hidden;
+  color: #617b95;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.countCell {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.countCell strong {
+  color: #e8f1fc;
+  font-size: 16px;
+}
+
+.countCell small {
+  color: #607892;
+  font-size: 9px;
+}
+
+.amountCell {
+  color: #dce8f7;
+  font-size: 13px;
+}
+
+.expiryCell {
+  color: #8ca1b8;
+  font-size: 11px;
+}
+
+.rowArrow {
+  color: #5bd1c4;
+  font-size: 24px;
+  font-weight: 400;
+  text-align: right;
 }
 
 .accountGrid {
@@ -638,6 +827,19 @@
 }
 
 @media (max-width: 1000px) {
+  .overviewStrip {
+    grid-template-columns: 1.4fr 1fr 1fr;
+  }
+
+  .overviewHealth,
+  .overviewProblem {
+    grid-column: 1 / -1;
+    align-items: flex-start;
+    border-top: 1px solid #1a344e;
+    border-left: 0 !important;
+    text-align: left;
+  }
+
   .summary,
   .detailSummary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -677,6 +879,11 @@
 
   .toolbar input {
     width: auto;
+    margin-left: 0;
+  }
+
+  .toolbar > i {
+    display: none;
   }
 
   .accountPanelTop > span,
@@ -687,6 +894,31 @@
   .accountGrid {
     grid-template-columns: 1fr;
     padding: 14px;
+  }
+
+  .overviewStrip {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .overviewStrip > div {
+    padding: 14px 16px;
+  }
+
+  .mainBalance {
+    grid-column: 1 / -1;
+  }
+
+  .overviewMetric {
+    border-top: 1px solid #1a344e;
+  }
+
+  .overviewHealth,
+  .overviewProblem {
+    grid-column: 1 / -1;
+  }
+
+  .accountPanel {
+    overflow-x: auto;
   }
 
   .historyRow {
