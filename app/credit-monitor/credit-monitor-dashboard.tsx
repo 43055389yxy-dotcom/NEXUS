@@ -29,6 +29,7 @@ type AccountState = {
 type Payload = { accounts: AccountState[]; credits: Credit[]; history: unknown[] };
 const EMPTY: Payload = { accounts: [], credits: [], history: [] };
 const PAGE_SIZE = 12;
+const AWS_CREDITS_DESTINATION = 'https://console.aws.amazon.com/billing/home#/credits';
 
 function dateTime(value: string) {
   if (!value) return '尚未同步';
@@ -56,6 +57,15 @@ function totalMoney(credits: Credit[]) {
   return money({ currencyCode, currencyAmount });
 }
 
+function awsCreditsUrl(accountId: string) {
+  const params = new URLSearchParams({
+    accountId,
+    roleName: 'TontianOperationsRole',
+    destination: AWS_CREDITS_DESTINATION,
+  });
+  return `/api/console-login?${params.toString()}`;
+}
+
 export function CreditMonitorDashboard() {
   const [data, setData] = useState<Payload>(EMPTY);
   const [loading, setLoading] = useState(true);
@@ -65,6 +75,7 @@ export function CreditMonitorDashboard() {
   const [scope, setScope] = useState<'active' | 'all'>('active');
   const [architecture, setArchitecture] = useState<'all' | 'cma' | 'legacy_payer'>('all');
   const [page, setPage] = useState(1);
+  const [expandedAccountId, setExpandedAccountId] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -127,11 +138,13 @@ export function CreditMonitorDashboard() {
   function chooseScope(next: 'active' | 'all') {
     setScope(next);
     setPage(1);
+    setExpandedAccountId('');
   }
 
   function chooseArchitecture(next: 'all' | 'cma' | 'legacy_payer') {
     setArchitecture(next);
     setPage(1);
+    setExpandedAccountId('');
   }
 
   return <main className={styles.shell}>
@@ -164,22 +177,40 @@ export function CreditMonitorDashboard() {
           <button className={architecture === 'cma' ? styles.selectedTab : ''} onClick={() => chooseArchitecture('cma')}>CMA {cmaCount}</button>
           <button className={architecture === 'legacy_payer' ? styles.selectedTab : ''} onClick={() => chooseArchitecture('legacy_payer')}>老代付 {legacyCount}</button>
         </div>
-        <input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="搜索账号名称或 ID" />
+        <input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); setExpandedAccountId(''); }} placeholder="搜索账号名称或 ID" />
       </div>
 
       {loading ? <div className={styles.empty}>正在读取...</div> : accountRows.length === 0 ? <div className={styles.empty}>没有匹配的代付账号</div> : <>
         <div className={styles.accountList}>
           <div className={styles.listHead}><span>账号</span><span>类型</span><span>有效券</span><span>预计余额</span><span>最近到期</span><span /></div>
-          {visibleRows.map(({ account, activeCredits: accountActiveCredits, nearestExpiry, remaining }) => <Link className={styles.accountRow} href={`/credit-monitor/${account.accountId}`} key={account.accountId}>
-            <div className={styles.accountName}><strong>{account.name}</strong><small>{account.accountId}{account.error ? ` · ${account.error}` : ''}</small></div>
-            <b className={account.architecture === 'cma' ? styles.cma : styles.legacy}>{account.groupName}</b>
-            <div className={styles.countCell}><strong>{accountActiveCredits.length}</strong><small>全部 {account.creditCount}</small></div>
-            <strong className={styles.amountCell}>{remaining}</strong>
-            <span className={styles.expiryCell}>{nearestExpiry ? dateOnly(nearestExpiry) : '—'}</span>
-            <b className={styles.rowArrow}>›</b>
-          </Link>)}
+          {visibleRows.map(({ account, activeCredits: accountActiveCredits, nearestExpiry, remaining }) => {
+            const expanded = expandedAccountId === account.accountId;
+            return <div className={styles.accountEntry} key={account.accountId}>
+              <button type="button" className={styles.accountRow} aria-expanded={expanded} onClick={() => setExpandedAccountId(expanded ? '' : account.accountId)}>
+                <div className={styles.accountName}><strong>{account.name}</strong><small>{account.accountId}{account.error ? ` · ${account.error}` : ''}</small></div>
+                <b className={account.architecture === 'cma' ? styles.cma : styles.legacy}>{account.groupName}</b>
+                <div className={styles.countCell}><strong>{accountActiveCredits.length}</strong><small>张有效券</small></div>
+                <strong className={styles.amountCell}>{remaining}</strong>
+                <span className={styles.expiryCell}>{nearestExpiry ? dateOnly(nearestExpiry) : '—'}</span>
+                <b className={expanded ? styles.rowArrowOpen : styles.rowArrow}>⌄</b>
+              </button>
+              {expanded && <div className={styles.creditExpansion}>
+                <div className={styles.expansionHeader}>
+                  <div><strong>{account.name}的有效代金券</strong><span>{accountActiveCredits.length > 0 ? `共 ${accountActiveCredits.length} 张，点击收起` : '当前没有有效代金券'}</span></div>
+                  <div className={styles.expansionActions}><Link href={`/credit-monitor/${account.accountId}`}>历史与变化</Link><a href={awsCreditsUrl(account.accountId)} target="_blank" rel="noopener noreferrer">立即查看</a></div>
+                </div>
+                {accountActiveCredits.length > 0 && <div className={styles.expandedCredits}>
+                  {accountActiveCredits.map((credit) => <div className={styles.expandedCredit} key={credit.creditId}>
+                    <div><strong>{credit.description}</strong><small>{credit.creditId}</small></div>
+                    <span><small>预计余额</small><b>{money(credit.estimatedAmount)}</b></span>
+                    <span><small>到期时间</small><b>{dateOnly(credit.endDate)}</b></span>
+                  </div>)}
+                </div>}
+              </div>}
+            </div>;
+          })}
         </div>
-        {pageCount > 1 && <div className={styles.pagination}><button disabled={page === 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><span>{page} / {pageCount}</span><button disabled={page === pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div>}
+        {pageCount > 1 && <div className={styles.pagination}><button disabled={page === 1} onClick={() => { setExpandedAccountId(''); setPage((value) => Math.max(1, value - 1)); }}>上一页</button><span>{page} / {pageCount}</span><button disabled={page === pageCount} onClick={() => { setExpandedAccountId(''); setPage((value) => Math.min(pageCount, value + 1)); }}>下一页</button></div>}
       </>}
     </section>
   </main>;

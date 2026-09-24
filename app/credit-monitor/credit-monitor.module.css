@@ -349,11 +349,20 @@
 }
 
 .accountRow {
+  width: 100%;
   min-height: 68px;
-  border-top: 1px solid #142b42;
+  border: 0;
   color: #aabdd2;
+  background: transparent;
+  font: inherit;
+  text-align: left;
   text-decoration: none;
+  cursor: pointer;
   transition: background .12s ease;
+}
+
+.accountEntry {
+  border-top: 1px solid #142b42;
 }
 
 .accountRow:hover {
@@ -414,6 +423,114 @@
   font-size: 24px;
   font-weight: 400;
   text-align: right;
+  transition: transform .16s ease;
+}
+
+.rowArrowOpen {
+  color: #5bd1c4;
+  font-size: 24px;
+  font-weight: 400;
+  text-align: right;
+  transform: rotate(180deg);
+}
+
+.creditExpansion {
+  padding: 0 22px 18px;
+  background: #081827;
+}
+
+.expansionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 15px 0 12px;
+  border-top: 1px solid #1d3a55;
+}
+
+.expansionHeader > div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.expansionHeader strong {
+  color: #dfeaf7;
+  font-size: 12px;
+}
+
+.expansionHeader span {
+  color: #6c849d;
+  font-size: 10px;
+}
+
+.expansionActions {
+  display: flex;
+  gap: 8px;
+}
+
+.expansionActions a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid #2c5a82;
+  border-radius: 8px;
+  color: #a8c8e8;
+  background: #0e2a43;
+  font-size: 10px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.expansionActions a:last-child {
+  border-color: #31a99f;
+  color: #d2fff7;
+  background: #12423f;
+}
+
+.expandedCredits {
+  display: grid;
+  gap: 7px;
+}
+
+.expandedCredit {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) 170px 170px;
+  gap: 16px;
+  align-items: center;
+  min-height: 56px;
+  padding: 0 14px;
+  border: 1px solid #1b354e;
+  border-radius: 9px;
+  background: #0b2032;
+}
+
+.expandedCredit > div,
+.expandedCredit > span {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.expandedCredit > div strong {
+  overflow: hidden;
+  color: #dce8f6;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.expandedCredit small {
+  color: #617a94;
+  font-size: 9px;
+}
+
+.expandedCredit > span b {
+  color: #b9c9db;
+  font-size: 11px;
 }
 
 .accountGrid {
@@ -919,6 +1036,21 @@
 
   .accountPanel {
     overflow-x: auto;
+  }
+
+  .expansionHeader {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .expansionActions a {
+    flex: 1;
+  }
+
+  .expandedCredit {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 12px 14px;
   }
 
   .historyRow {

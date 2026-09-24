@@ -159,7 +159,7 @@ export function CreditAccountDashboard({ accountId }: { accountId: string }) {
     {account.error && <p className={styles.detailError}>{account.error}</p>}
 
     <section className={styles.detailSummary}>
-      <div><span>有效券</span><strong>{activeCredits.length}</strong><small>全部 {credits.length} 张</small></div>
+      <div><span>有效券</span><strong>{activeCredits.length}</strong><small>历史记录 {closedCredits.length} 张</small></div>
       <div><span>有效券发放金额</span><strong>{totalMoney(activeCredits, 'initialAmount')}</strong><small>仅统计有效券</small></div>
       <div><span>预计剩余</span><strong>{totalMoney(activeCredits, 'estimatedAmount')}</strong><small>按 AWS 预计金额</small></div>
       <div><span>最近到期</span><strong className={styles.dateValue}>{nearestExpiry ? dateOnly(nearestExpiry) : '暂无'}</strong><small>{nearestExpiry ? '最近一张有效券' : '没有有效券'}</small></div>
@@ -175,7 +175,7 @@ export function CreditAccountDashboard({ accountId }: { accountId: string }) {
         <div className={styles.creditFilters}>
           <button className={stateFilter === 'active' ? styles.selectedFilter : ''} onClick={() => chooseFilter('active')}>有效 {activeCredits.length}</button>
           <button className={stateFilter === 'closed' ? styles.selectedFilter : ''} onClick={() => chooseFilter('closed')}>已结束 {closedCredits.length}</button>
-          <button className={stateFilter === 'all' ? styles.selectedFilter : ''} onClick={() => chooseFilter('all')}>全部 {credits.length}</button>
+          <button className={stateFilter === 'all' ? styles.selectedFilter : ''} onClick={() => chooseFilter('all')}>所有记录 {credits.length}</button>
         </div>
         {visibleCredits.length === 0 ? <div className={styles.empty}>此分类暂无代金券</div> : <div className={styles.creditTableWrap}><div className={styles.creditTable}>
           <div className={styles.tableHead}><span>代金券</span><span>所有者</span><span>已发放</span><span>已使用</span><span>剩余</span><span>预计剩余</span><span>到期日</span><span>状态</span></div>
