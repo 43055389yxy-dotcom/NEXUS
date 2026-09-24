@@ -149,27 +149,19 @@ export function CreditMonitorDashboard({ canSync }: { canSync: boolean }) {
 
   return <main className={styles.shell}>
     <header className={styles.header}>
-      <div><span>账单与成本管理</span><h1>代金券监控</h1><p>先看哪些账号有券，再点击账号查看明细</p></div>
+      <div className={styles.headerTitle}><h1>代金券监控</h1><b className={errorCount ? styles.headerProblem : styles.headerStatus}>{errorCount ? `${errorCount} 个异常` : '正常'}</b><span>最后同步 {dateTime(lastRunAt)} · 每天 09:15</span></div>
       <div className={styles.actions}><button type="button" className={styles.secondary} onClick={() => window.location.assign('/')}>返回账号管理</button>{canSync && <button type="button" className={styles.primary} disabled={refreshing} onClick={() => void refresh()}>{refreshing ? '同步中...' : '立即同步'}</button>}</div>
     </header>
     {notice && <div className={styles.notice}>{notice}</div>}
 
     <section className={styles.overviewStrip}>
-      <div className={styles.mainBalance}><span>有效券预计余额</span><strong>{totalMoney(activeCredits)}</strong></div>
-      <div className={styles.overviewMetric}><strong>{activeCredits.length}</strong><span>张有效券</span></div>
-      <div className={styles.overviewMetric}><strong>{activeAccountCount}</strong><span>个账号有券</span></div>
-      <div className={errorCount ? styles.overviewProblem : styles.overviewHealth}><b>{errorCount ? `${errorCount} 个账号异常` : '同步状态正常'}</b><span>最后同步 {dateTime(lastRunAt)}</span></div>
-    </section>
-
-    <section className={styles.accountPanel}>
-      <div className={styles.accountPanelTop}>
-        <div><h2>账号列表</h2><p>默认只显示有有效券的账号</p></div>
-        <span>共监控 {data.accounts.length} 个账号 · 每天 09:15 自动同步</span>
-      </div>
-      <div className={styles.toolbar}>
+      <div className={styles.mainBalance}><span>有效余额</span><strong>{totalMoney(activeCredits)}</strong></div>
+      <div className={styles.overviewMetric}><span>有效券</span><strong>{activeCredits.length}</strong></div>
+      <div className={styles.overviewMetric}><span>有券账号</span><strong>{activeAccountCount}</strong></div>
+      <div className={styles.compactControls}>
         <div className={styles.scopeTabs}>
-          <button className={scope === 'active' ? styles.selectedScope : ''} onClick={() => chooseScope('active')}>有有效券 {activeAccountCount}</button>
-          <button className={scope === 'all' ? styles.selectedScope : ''} onClick={() => chooseScope('all')}>全部账号 {data.accounts.length}</button>
+          <button className={scope === 'active' ? styles.selectedScope : ''} onClick={() => chooseScope('active')}>有券 {activeAccountCount}</button>
+          <button className={scope === 'all' ? styles.selectedScope : ''} onClick={() => chooseScope('all')}>全部 {data.accounts.length}</button>
         </div>
         <i />
         <div className={styles.tabs}>
@@ -179,6 +171,9 @@ export function CreditMonitorDashboard({ canSync }: { canSync: boolean }) {
         </div>
         <input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); setExpandedAccountId(''); }} placeholder="搜索账号名称或 ID" />
       </div>
+    </section>
+
+    <section className={styles.accountPanel}>
 
       {loading ? <div className={styles.empty}>正在读取...</div> : accountRows.length === 0 ? <div className={styles.empty}>没有匹配的代付账号</div> : <>
         <div className={styles.accountList}>

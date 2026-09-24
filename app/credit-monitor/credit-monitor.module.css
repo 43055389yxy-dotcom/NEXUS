@@ -1,6 +1,6 @@
 .shell {
   min-height: 100vh;
-  padding: 30px 38px 64px;
+  padding: 22px 30px 56px;
   color: #e8f0ff;
   background:
     radial-gradient(circle at 86% 5%, rgba(33, 119, 193, .17), transparent 30%),
@@ -25,29 +25,53 @@
 .header,
 .detailHeader {
   display: flex;
-  align-items: flex-start;
   justify-content: space-between;
   gap: 24px;
+}
+
+.header {
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.detailHeader {
+  align-items: flex-start;
   margin-bottom: 22px;
 }
 
-.header > div:first-child > span {
-  color: #56d6c5;
-  font: 800 12px ui-monospace, SFMono-Regular, Menlo, monospace;
-  letter-spacing: 1.5px;
+.headerTitle {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .header h1 {
-  margin: 8px 0 7px;
-  font-size: 34px;
-  letter-spacing: -1.2px;
+  margin: 0 7px 0 0;
+  font-size: 29px;
+  letter-spacing: -1px;
 }
 
-.header p,
-.accountPanelTop p {
-  margin: 0;
-  color: #7890aa;
-  font-size: 13px;
+.headerTitle > b {
+  padding: 4px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+}
+
+.headerStatus {
+  color: #71dfbd;
+  background: #10392f;
+}
+
+.headerProblem {
+  color: #ff9aa3;
+  background: #471f27;
+}
+
+.headerTitle > span {
+  color: #6f87a0;
+  font-size: 10px;
 }
 
 .actions {
@@ -102,11 +126,11 @@
 
 .overviewStrip {
   width: min(1600px, 100%);
-  min-height: 98px;
+  min-height: 66px;
   display: grid;
-  grid-template-columns: minmax(280px, 1.4fr) 180px 180px minmax(240px, 1fr);
+  grid-template-columns: minmax(210px, .8fr) 105px 120px minmax(620px, 2.4fr);
   align-items: stretch;
-  margin: 0 auto 18px;
+  margin: 0 auto 12px;
   overflow: hidden;
   border: 1px solid #1d3b59;
   border-radius: 14px;
@@ -116,9 +140,8 @@
 .overviewStrip > div {
   min-width: 0;
   display: flex;
-  flex-direction: column;
   justify-content: center;
-  padding: 17px 22px;
+  padding: 10px 16px;
   border-left: 1px solid #1a344e;
 }
 
@@ -127,48 +150,30 @@
 }
 
 .mainBalance span,
-.overviewMetric span,
-.overviewHealth span,
-.overviewProblem span {
+.overviewMetric span {
   color: #6f89a3;
-  font-size: 11px;
+  font-size: 10px;
+}
+
+.mainBalance {
+  align-items: baseline;
+  gap: 10px;
 }
 
 .mainBalance strong {
-  display: block;
-  margin-top: 5px;
   color: #f2f7ff;
-  font-size: 30px;
+  font-size: 20px;
 }
 
 .overviewMetric {
   align-items: center;
+  gap: 6px;
   text-align: center;
 }
 
 .overviewMetric strong {
   color: #eaf2ff;
-  font-size: 25px;
-}
-
-.overviewHealth,
-.overviewProblem {
-  align-items: flex-end;
-  text-align: right;
-}
-
-.overviewHealth b,
-.overviewProblem b {
-  margin-bottom: 6px;
-  font-size: 13px;
-}
-
-.overviewHealth b {
-  color: #71dfbd;
-}
-
-.overviewProblem b {
-  color: #ff9aa3;
+  font-size: 18px;
 }
 
 .summary,
@@ -230,33 +235,10 @@
   box-shadow: 0 20px 52px rgba(0, 0, 0, .16);
 }
 
-.accountPanelTop {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 20px;
-  padding: 20px 22px 17px;
-}
-
-.accountPanelTop h2 {
-  margin: 0 0 5px;
-  font-size: 18px;
-}
-
-.accountPanelTop > span {
-  color: #667f99;
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-.toolbar {
+.compactControls {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 12px 22px;
-  border-top: 1px solid #162d45;
-  border-bottom: 1px solid #162d45;
-  background: #091827;
+  gap: 8px;
 }
 
 .scopeTabs {
@@ -265,7 +247,7 @@
 }
 
 .scopeTabs button {
-  padding: 9px 13px;
+  padding: 7px 10px;
   border: 1px solid transparent;
   border-radius: 8px;
   color: #8097ae;
@@ -281,9 +263,10 @@
   background: #12403f;
 }
 
-.toolbar > i {
+.compactControls > i {
   width: 1px;
-  height: 24px;
+  height: 22px;
+  flex: 0 0 auto;
   background: #263d55;
 }
 
@@ -294,7 +277,7 @@
 
 .tabs button,
 .creditFilters button {
-  padding: 8px 12px;
+  padding: 7px 10px;
   border: 1px solid #29415b;
   border-radius: 8px;
   color: #8ba0b7;
@@ -311,10 +294,11 @@
   background: #123b3d;
 }
 
-.toolbar input {
-  width: min(360px, 36vw);
+.compactControls input {
+  min-width: 150px;
+  width: min(260px, 22vw);
   margin-left: auto;
-  padding: 10px 12px;
+  padding: 8px 10px;
   border: 1px solid #29425d;
   border-radius: 9px;
   outline: 0;
@@ -323,7 +307,7 @@
   font-size: 11px;
 }
 
-.toolbar input:focus {
+.compactControls input:focus {
   border-color: #3b82d0;
 }
 
@@ -952,13 +936,10 @@
     grid-template-columns: 1.4fr 1fr 1fr;
   }
 
-  .overviewHealth,
-  .overviewProblem {
+  .compactControls {
     grid-column: 1 / -1;
-    align-items: flex-start;
     border-top: 1px solid #1a344e;
     border-left: 0 !important;
-    text-align: left;
   }
 
   .summary,
@@ -978,9 +959,7 @@
 
   .header,
   .detailHeader,
-  .accountHero,
-  .accountPanelTop,
-  .toolbar {
+  .accountHero {
     align-items: stretch;
     flex-direction: column;
   }
@@ -998,16 +977,20 @@
     grid-template-columns: 1fr 1fr;
   }
 
-  .toolbar input {
+  .compactControls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .compactControls input {
     width: auto;
     margin-left: 0;
   }
 
-  .toolbar > i {
+  .compactControls > i {
     display: none;
   }
 
-  .accountPanelTop > span,
   .accountHero > span {
     white-space: normal;
   }
@@ -1033,8 +1016,7 @@
     border-top: 1px solid #1a344e;
   }
 
-  .overviewHealth,
-  .overviewProblem {
+  .compactControls {
     grid-column: 1 / -1;
   }
 
