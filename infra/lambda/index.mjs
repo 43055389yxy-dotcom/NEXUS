@@ -5,6 +5,7 @@ import { handleOuAutomationRequest, isOuAutomationScheduledEvent, runScheduledOu
 import { handleMfaRecoveryRequest } from "./mfa-recovery.mjs";
 import { handleSupportBillingRequest, isSupportBillingScheduledEvent, runScheduledSupportBilling } from "./support-billing.mjs";
 import { handleApnMonitorRequest, isApnMonitorScheduledEvent, runScheduledApnMonitor } from "./apn-monitor.mjs";
+import { handleCreditMonitorRequest, isCreditMonitorScheduledEvent, runScheduledCreditMonitor } from "./credit-monitor.mjs";
 
 const dynamodb = new DynamoDBClient({});
 const sts = new STSClient({});
@@ -335,6 +336,7 @@ export const handler = async (event) => {
   try {
     if (isSupportBillingScheduledEvent(event)) return { supportBilling: await runScheduledSupportBilling().catch((error) => ({ error: error?.message || "Support billing automation failed" })) };
     if (isApnMonitorScheduledEvent(event)) return { apnMonitor: await runScheduledApnMonitor().catch((error) => ({ error: error?.message || "APN monitor automation failed" })) };
+    if (isCreditMonitorScheduledEvent(event)) return { creditMonitor: await runScheduledCreditMonitor().catch((error) => ({ error: error?.message || "Credit monitor automation failed" })) };
     if (isOuAutomationScheduledEvent(event)) return { ou: await runScheduledOuAutomation().catch((error) => ({ error: error?.message || "OU automation failed" })) };
     const method = event.requestContext?.http?.method || event.httpMethod;
     if (method === "OPTIONS") return response(200, { ok: true });
@@ -356,6 +358,7 @@ export const handler = async (event) => {
     if (method === "POST" && path === "/mfa-recovery") return response(200, await handleMfaRecoveryRequest({ method, body: parseBody(event), identity }));
     if ((method === "GET" || method === "POST") && path === "/support-billing") return response(200, await handleSupportBillingRequest({ method, body: method === "POST" ? parseBody(event) : {}, identity }));
     if ((method === "GET" || method === "POST") && path === "/apn-monitor") { requireAdmin(identity); return response(200, await handleApnMonitorRequest({ method, body: method === "POST" ? parseBody(event) : {} })); }
+    if ((method === "GET" || method === "POST") && path === "/credit-monitor") { requireAdmin(identity); return response(200, await handleCreditMonitorRequest({ method, body: method === "POST" ? parseBody(event) : {} })); }
     if (method === "POST" && path === "/console-login") return response(200, await createConsoleLogin(identity, parseBody(event)));
     return response(404, { error: "Not found" });
   } catch (error) {
