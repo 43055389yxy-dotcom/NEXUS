@@ -1,6 +1,6 @@
 import { DynamoDBClient, GetItemCommand, PutItemCommand, QueryCommand, ScanCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
 import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
-import { AttachPolicyCommand, CreateOrganizationalUnitCommand, CreatePolicyCommand, DeletePolicyCommand, DescribeOrganizationCommand, DescribePolicyCommand, DetachPolicyCommand, EnablePolicyTypeCommand, ListAccountsCommand, ListAccountsForParentCommand, ListOrganizationalUnitsForParentCommand, ListParentsCommand, ListPoliciesCommand, ListPoliciesForTargetCommand, ListRootsCommand, ListTargetsForPolicyCommand, MoveAccountCommand, OrganizationsClient, UpdatePolicyCommand } from "@aws-sdk/client-organizations";
+import { AttachPolicyCommand, CreateOrganizationalUnitCommand, CreatePolicyCommand, DeletePolicyCommand, DescribeOrganizationCommand, DescribePolicyCommand, DetachPolicyCommand, EnablePolicyTypeCommand, ListAccountsCommand, ListOrganizationalUnitsForParentCommand, ListParentsCommand, ListPoliciesCommand, ListPoliciesForTargetCommand, ListRootsCommand, ListTargetsForPolicyCommand, MoveAccountCommand, OrganizationsClient, UpdatePolicyCommand } from "@aws-sdk/client-organizations";
 
 const dynamodb = new DynamoDBClient({});
 const sts = new STSClient({});
@@ -14,6 +14,7 @@ const temporaryName = "临时";
 const restrictedName = "禁止 SP/RI";
 const restrictedPolicyName = "NEXUS-Restricted-Guardrails";
 const obsoletePolicyName = "DenyLeaveAndCloseAccount";
+const guardrailCacheVersion = "direct-account-v1";
 const policyDocuments = {
   [restrictedPolicyName]: { Version: "2012-10-17", Statement: [{ Effect: "Deny", Action: ["savingsplans:CreateSavingsPlan", "ec2:PurchaseReservedInstancesOffering", "rds:PurchaseReservedDBInstancesOffering", "organizations:LeaveOrganization", "account:CloseAccount"], Resource: "*" }] },
 };
@@ -36,9 +37,9 @@ async function requireAccount(accountId) {
   const accountType = itemAccountType(accountResult.Item, groupName);
   const temporaryOuId = accountResult.Item.temporaryOuId?.S || "";
   const restrictedOuId = accountResult.Item.restrictedOuId?.S || "";
-  const memberCache = parseJson(accountResult.Item.ouMemberCache?.S, null);
-  const cloudSweepRestrictionExemptions = parseJson(accountResult.Item.cloudSweepRestrictionExemptions?.S, {});
-  return { accountId, remark: accountResult.Item.remark?.S || accountResult.Item.name?.S || accountId, groupId, groupName: canonicalGroupName(groupName), accountType, temporaryOuId, restrictedOuId, configured: Boolean(temporaryOuId && restrictedOuId), lastRunAt: accountResult.Item.ouAutomationLastRunAt?.S || "", lastStatus: accountResult.Item.ouAutomationLastStatus?.S || "", memberCache, cloudSweepRestrictionExemptions };
+  const memberCache = parseJson(accountResult.Item.guardrailMemberCache?.S || accountResult.Item.ouMemberCache?.S, null);
+  const restrictionExemptions = parseJson(accountResult.Item.guardrailExemptions?.S || accountResult.Item.cloudSweepRestrictionExemptions?.S, {});
+  return { accountId, remark: accountResult.Item.remark?.S || accountResult.Item.name?.S || accountId, groupId, groupName: canonicalGroupName(groupName), accountType, temporaryOuId, restrictedOuId, configured: Boolean(temporaryOuId && restrictedOuId), lastRunAt: accountResult.Item.ouAutomationLastRunAt?.S || "", lastStatus: accountResult.Item.ouAutomationLastStatus?.S || "", memberCache, restrictionExemptions, cloudSweepRestrictionExemptions: restrictionExemptions };
 }
 
 async function listAccounts() {
@@ -90,7 +91,7 @@ async function inspect(accountId) {
   return { ...organization, account, ous, temporaryOu, restrictedOu, temporaryOuId: temporaryOu?.id || "", restrictedOuId: restrictedOu?.id || "" };
 }
 
-function publicAccount(account) { const value = { ...account }; delete value.memberCache; delete value.cloudSweepRestrictionExemptions; return value; }
+function publicAccount(account) { const value = { ...account }; delete value.memberCache; delete value.restrictionExemptions; delete value.cloudSweepRestrictionExemptions; return value; }
 function publicDiscovery(value) { return { account: publicAccount(value.account), ous: value.ous || [], temporaryOu: value.temporaryOu || null, restrictedOu: value.restrictedOu || null, temporaryOuId: value.temporaryOuId, restrictedOuId: value.restrictedOuId }; }
 
 async function resolveOu(value, selectedId, name, allowCreate) {
@@ -108,16 +109,16 @@ async function resolveOu(value, selectedId, name, allowCreate) {
 }
 
 
-async function listScps(client, rootId) {
-  const read = async () => {
-    const result = [];
-    let NextToken;
-    do { const page = await client.send(new ListPoliciesCommand({ Filter: "SERVICE_CONTROL_POLICY", NextToken })); result.push(...(page.Policies || [])); NextToken = page.NextToken; } while (NextToken);
-    return result;
-  };
+async function readScps(client) {
+  const result = [];
+  let NextToken;
+  do { const page = await client.send(new ListPoliciesCommand({ Filter: "SERVICE_CONTROL_POLICY", NextToken })); result.push(...(page.Policies || [])); NextToken = page.NextToken; } while (NextToken);
+  return result;
+}
 
+async function listScps(client, rootId) {
   let result = [];
-  try { result = await read(); }
+  try { result = await readScps(client); }
   catch (error) { if (error?.name !== "PolicyTypeNotEnabledException") throw error; }
   if (result.some((policy) => policy.Name === "FullAWSAccess")) return result;
 
@@ -126,7 +127,7 @@ async function listScps(client, rootId) {
 
   for (let attempt = 0; attempt < 6; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
-    try { result = await read(); }
+    try { result = await readScps(client); }
     catch (error) { if (error?.name !== "PolicyTypeNotEnabledException") throw error; }
     if (result.some((policy) => policy.Name === "FullAWSAccess")) return result;
   }
@@ -188,8 +189,7 @@ async function configureFromInspection(value, mapping = {}) {
   const restrictedPolicyId = await ensureScp(value.client, policies, restrictedPolicyName, policyDocuments[restrictedPolicyName]);
   await attach(value.client, temporaryOu.id, fullAccessId);
   await attach(value.client, restrictedOu.id, fullAccessId);
-  await attach(value.client, restrictedOu.id, restrictedPolicyId);
-  await detachFromEverywhereExcept(value.client, restrictedPolicyId, restrictedOu.id);
+  if (!restrictedPolicyId) fail("无法读取客户限制策略");
   await removeObsoletePolicies(value.client, policies);
   const updatedAt = new Date().toISOString();
   await dynamodb.send(new UpdateItemCommand({ TableName: accountsTable, Key: { accountId: { S: value.account.accountId } }, UpdateExpression: "SET temporaryOuId=:temporary, restrictedOuId=:restricted, ouAutomationUpdatedAt=:updated", ExpressionAttributeValues: { ":temporary": { S: temporaryOu.id }, ":restricted": { S: restrictedOu.id }, ":updated": { S: updatedAt } } }));
@@ -207,8 +207,6 @@ async function initialize(body) {
   value.restrictedOuId = configuration.restrictedOu.id;
   return { configuration, discovery: publicDiscovery(value), members: value.account.memberCache?.members || [] };
 }
-
-async function accountsForParent(client, parentId) { const result = []; let NextToken; do { const page = await client.send(new ListAccountsForParentCommand({ ParentId: parentId, NextToken })); result.push(...(page.Accounts || [])); NextToken = page.NextToken; } while (NextToken); return result; }
 
 async function recordOperation({ account, mode, status, checked, moved, skipped, message, movedAccounts = [] }) {
   const occurredAt = new Date().toISOString();
@@ -264,107 +262,178 @@ async function movementHistory(accountId = "") {
     movedAccounts: (() => { try { return JSON.parse(item.movedAccountsJson?.S || "[]"); } catch { return []; } })(),
   })).sort((left, right) => right.occurredAt.localeCompare(left.occurredAt)).slice(0, 500);
 }
-async function memberDirectory(value) {
-  const ouNames = new Map(value.ous.map((ou) => [ou.id, ou.name]));
-  const parents = [{ id: value.rootId }, ...value.ous.map((ou) => ({ id: ou.id }))];
-  const result = [];
-  for (const parent of parents) {
-    const members = await accountsForParent(value.client, parent.id);
-    for (const member of members) {
-      if (!member.Id || member.Id === value.managementAccountId || member.Status === "SUSPENDED" || member.State === "SUSPENDED") continue;
-      result.push(memberDirectoryEntry(value, member, parent.id, ouNames));
-    }
-  }
-  return result.sort((left, right) => left.name.localeCompare(right.name, "zh-CN") || left.accountId.localeCompare(right.accountId));
-}
-
-function memberDirectoryEntry(value, member, parentId, ouNames = new Map((value.ous || []).map((ou) => [ou.id, ou.name]))) {
-  const placement = parentId === value.temporaryOuId ? "temporary" : parentId === value.restrictedOuId ? "restricted" : parentId === value.rootId ? "ungrouped" : "other";
-  return { accountId: member.Id, name: member.Name || member.Id, email: member.Email || "", parentId, parentName: placement === "temporary" ? temporaryName : placement === "restricted" ? restrictedName : placement === "ungrouped" ? "未分组" : ouNames.get(parentId) || "其他 OU", placement };
-}
-
 async function saveMemberCache(account, members) {
   const cachedAt = new Date().toISOString();
-  const payload = JSON.stringify({ cachedAt, members });
+  const payload = JSON.stringify({ version: guardrailCacheVersion, cachedAt, members });
   if (Buffer.byteLength(payload, "utf8") > 350000) return false;
-  await dynamodb.send(new UpdateItemCommand({ TableName: accountsTable, Key: { accountId: { S: account.accountId } }, UpdateExpression: "SET ouMemberCache=:cache, ouMemberCacheAt=:cachedAt", ExpressionAttributeValues: { ":cache": { S: payload }, ":cachedAt": { S: cachedAt } } }));
-  account.memberCache = { cachedAt, members };
+  await dynamodb.send(new UpdateItemCommand({ TableName: accountsTable, Key: { accountId: { S: account.accountId } }, UpdateExpression: "SET guardrailMemberCache=:cache, guardrailMemberCacheAt=:cachedAt", ExpressionAttributeValues: { ":cache": { S: payload }, ":cachedAt": { S: cachedAt } } }));
+  account.memberCache = { version: guardrailCacheVersion, cachedAt, members };
   return true;
 }
 
-async function discoverAccount(accountId) {
-  const account = await requireAccount(accountId);
-  if (account.configured && Array.isArray(account.memberCache?.members)) {
-    return { discovery: { account: publicAccount(account), ous: [], temporaryOu: { id: account.temporaryOuId, name: temporaryName }, restrictedOu: { id: account.restrictedOuId, name: restrictedName }, temporaryOuId: account.temporaryOuId, restrictedOuId: account.restrictedOuId }, members: account.memberCache.members, cached: true, cachedAt: account.memberCache.cachedAt || "" };
+async function organizationMembers(client, managementAccountId) {
+  const result = [];
+  let NextToken;
+  do {
+    const page = await client.send(new ListAccountsCommand({ NextToken }));
+    for (const member of page.Accounts || []) {
+      if (!member.Id || member.Id === managementAccountId || member.Status === "SUSPENDED" || member.State === "SUSPENDED") continue;
+      result.push(member);
+    }
+    NextToken = page.NextToken;
+  } while (NextToken);
+  return result.sort((left, right) => String(left.Name || left.Id).localeCompare(String(right.Name || right.Id), "zh-CN") || left.Id.localeCompare(right.Id));
+}
+
+function publicGuardrailMember(member, directTargetIds, exemptions) {
+  const exempt = Boolean(exemptions?.[member.Id]);
+  const restricted = directTargetIds.has(member.Id) && !exempt;
+  return {
+    accountId: member.Id,
+    name: member.Name || member.Id,
+    email: member.Email || "",
+    restrictionStatus: exempt ? "exempt" : restricted ? "restricted" : "missing",
+    restricted,
+    exempt,
+  };
+}
+
+async function guardrailDiscovery(account, { force = false } = {}) {
+  if (!force && account.memberCache?.version === guardrailCacheVersion && Array.isArray(account.memberCache.members)) {
+    return { discovery: { account: publicAccount(account), policyName: restrictedPolicyName }, members: account.memberCache.members, cached: true, cachedAt: account.memberCache.cachedAt || "" };
   }
-  const value = await inspect(accountId);
-  if (!account.configured) return { discovery: publicDiscovery(value), members: [], cached: false, cachedAt: "" };
-  const members = await memberDirectory(value);
-  await saveMemberCache(value.account, members);
-  return { discovery: publicDiscovery(value), members, cached: false, cachedAt: value.account.memberCache?.cachedAt || "" };
+  const organization = await context(account);
+  let policies = [];
+  try { policies = await readScps(organization.client); }
+  catch (error) { if (error?.name !== "PolicyTypeNotEnabledException") throw error; }
+  const policy = policies.find((item) => item.Name === restrictedPolicyName && !item.AwsManaged);
+  const targets = policy?.Id ? await policyTargets(organization.client, policy.Id) : [];
+  const directTargetIds = new Set(targets.filter((target) => target.Type === "ACCOUNT" && target.TargetId).map((target) => target.TargetId));
+  const members = (await organizationMembers(organization.client, organization.managementAccountId)).map((member) => publicGuardrailMember(member, directTargetIds, account.restrictionExemptions));
+  await saveMemberCache(account, members);
+  return { discovery: { account: publicAccount(account), policyName: restrictedPolicyName, policyId: policy?.Id || "" }, members, cached: false, cachedAt: account.memberCache?.cachedAt || "" };
+}
+
+async function discoverAccount(accountId, options = {}) {
+  const account = await requireAccount(accountId);
+  return guardrailDiscovery(account, options);
 }
 
 async function recordRun(accountId, status, message) { await dynamodb.send(new UpdateItemCommand({ TableName: accountsTable, Key: { accountId: { S: accountId } }, UpdateExpression: "SET ouAutomationLastRunAt=:runAt, ouAutomationLastStatus=:status, ouAutomationLastMessage=:message", ExpressionAttributeValues: { ":runAt": { S: new Date().toISOString() }, ":status": { S: status }, ":message": { S: String(message || "").slice(0, 500) } } })); }
 
-async function reconcile(accountId, { allMembers = false, mode = "automatic" } = {}) {
-  const account = await requireAccount(accountId);
-  if (!account.temporaryOuId || !account.restrictedOuId) fail("请先完成 OU 自动初始化");
-  let checked = 0;
-  let moved = 0;
-  let skipped = 0;
-  let held = 0;
-  const movedAccounts = [];
-  const heldAccountIds = new Set(Object.keys(account.cloudSweepRestrictionExemptions || {}));
-  try {
-    const organization = await context(account);
-    const ous = allMembers ? await rootOus(organization.client, organization.rootId) : [];
-    const parents = allMembers
-      ? [{ id: organization.rootId, name: "未分组" }, ...ous.map((ou) => ({ id: ou.id, name: ou.path || ou.name }))]
-      : [{ id: account.temporaryOuId, name: temporaryName }];
-    const candidates = [];
-    for (const parent of parents) {
-      const members = await accountsForParent(organization.client, parent.id);
-      for (const member of members) {
-        if (!member.Id || member.Id === organization.managementAccountId || member.Status === "SUSPENDED" || member.State === "SUSPENDED") continue;
-        candidates.push({ member, parentId: parent.id, parentName: parent.name });
+async function syncDirectGuardrails(account) {
+  const organization = await context(account);
+  const policies = await listScps(organization.client, organization.rootId);
+  const policyId = await ensureScp(organization.client, policies, restrictedPolicyName, policyDocuments[restrictedPolicyName]);
+  const members = await organizationMembers(organization.client, organization.managementAccountId);
+  const targets = await policyTargets(organization.client, policyId);
+  const directTargetIds = new Set(targets.filter((target) => target.Type === "ACCOUNT" && target.TargetId).map((target) => target.TargetId));
+  const changedAccounts = [];
+  let added = 0;
+  let removed = 0;
+  let already = 0;
+  let exempt = 0;
+
+  for (const member of members) {
+    const isExempt = Boolean(account.restrictionExemptions?.[member.Id]);
+    const isAttached = directTargetIds.has(member.Id);
+    if (isExempt) {
+      exempt += 1;
+      if (isAttached) {
+        await organization.client.send(new DetachPolicyCommand({ PolicyId: policyId, TargetId: member.Id }));
+        directTargetIds.delete(member.Id);
+        removed += 1;
+        changedAccounts.push({ accountId: member.Id, name: member.Name || member.Id, email: member.Email || "", sourceParentName: "已限制", destinationParentName: "已取消" });
       }
+      continue;
     }
-    const movementContext = { ...organization, account, temporaryOuId: account.temporaryOuId, restrictedOuId: account.restrictedOuId, ous };
-    checked = candidates.length;
-    for (const candidate of candidates) {
-      if (heldAccountIds.has(candidate.member.Id)) { skipped += 1; held += 1; continue; }
-      if (candidate.parentId === account.restrictedOuId) { skipped += 1; continue; }
-      await organization.client.send(new MoveAccountCommand({ AccountId: candidate.member.Id, SourceParentId: candidate.parentId, DestinationParentId: account.restrictedOuId }));
-      movedAccounts.push({ accountId: candidate.member.Id, name: candidate.member.Name || candidate.member.Id, email: candidate.member.Email || "", sourceParentName: candidate.parentName, destinationParentName: restrictedName });
-      moved += 1;
-    }
-    if (Array.isArray(account.memberCache?.members)) {
-      const movedDirectory = new Map(candidates.filter((candidate) => candidate.parentId !== account.restrictedOuId && !heldAccountIds.has(candidate.member.Id)).map(({ member }) => [member.Id, memberDirectoryEntry(movementContext, member, account.restrictedOuId)]));
-      const directory = account.memberCache.members.map((member) => movedDirectory.get(member.accountId) || member);
-      const cachedIds = new Set(directory.map((member) => member.accountId));
-      for (const [memberId, member] of movedDirectory) if (!cachedIds.has(memberId)) directory.push(member);
-      await saveMemberCache(account, directory.sort((left, right) => left.name.localeCompare(right.name, "zh-CN") || left.accountId.localeCompare(right.accountId)));
-    }
-    const heldText = held ? `，CloudSweep SCP 豁免 ${held} 个` : "";
-    const message = allMembers ? `共检查 ${checked} 个账号，归位 ${moved} 个，跳过 ${skipped} 个${heldText}` : `临时 OU ${checked} 个账号，归位 ${moved} 个${heldText}`;
+    if (isAttached) { already += 1; continue; }
+    try { await organization.client.send(new AttachPolicyCommand({ PolicyId: policyId, TargetId: member.Id })); }
+    catch (error) { if (error?.name !== "DuplicatePolicyAttachmentException") throw error; }
+    directTargetIds.add(member.Id);
+    added += 1;
+    changedAccounts.push({ accountId: member.Id, name: member.Name || member.Id, email: member.Email || "", sourceParentName: "未限制", destinationParentName: "已限制" });
+  }
+
+  for (const target of targets) {
+    if (!target.TargetId || target.Type === "ACCOUNT") continue;
+    await organization.client.send(new DetachPolicyCommand({ PolicyId: policyId, TargetId: target.TargetId }));
+  }
+  await removeObsoletePolicies(organization.client, policies);
+
+  const directory = members.map((member) => publicGuardrailMember(member, directTargetIds, account.restrictionExemptions));
+  await saveMemberCache(account, directory);
+  return { accountId: account.accountId, checked: members.length, added, removed, already, exempt, moved: added + removed, skipped: already + exempt, members: directory, changedAccounts, policyId };
+}
+
+async function reconcile(accountId, { mode = "automatic" } = {}) {
+  const account = await requireAccount(accountId);
+  try {
+    const result = await syncDirectGuardrails(account);
+    const message = `检查 ${result.checked} 个客户，新增限制 ${result.added} 个，已限制 ${result.already} 个，已取消 ${result.exempt} 个`;
     await recordRun(accountId, "success", message);
-    await recordOperation({ account, mode, status: "success", checked, moved, skipped, message, movedAccounts });
-    return { accountId, checked, moved, skipped, message };
+    await recordOperation({ account, mode, status: "success", checked: result.checked, moved: result.moved, skipped: result.skipped, message, movedAccounts: result.changedAccounts });
+    return { ...result, message };
   } catch (error) {
-    const message = error.message || "归位失败";
+    const message = error.message || "客户限制同步失败";
     await recordRun(accountId, "failed", message);
-    await recordOperation({ account, mode, status: "failed", checked, moved, skipped, message, movedAccounts });
+    await recordOperation({ account, mode, status: "failed", checked: 0, moved: 0, skipped: 0, message, movedAccounts: [] });
     throw error;
   }
 }
 
-async function initializeExistingOuMapping(account) {
-  const value = await inspect(account.accountId);
-  const missing = [];
-  if (!value.temporaryOu) missing.push(`“${temporaryName}”`);
-  if (!value.restrictedOu) missing.push(`“${restrictedName}”`);
-  if (missing.length > 0) fail(`未找到唯一的 ${missing.join(" 和 ")} OU，请先在页面选择 OU 映射`);
-  await configureFromInspection(value, { temporaryOuId: value.temporaryOu.id, restrictedOuId: value.restrictedOu.id });
+async function setMemberRestriction(body) {
+  if (body.confirmed !== true) fail("必须明确确认后才能修改客户限制");
+  const accountId = String(body.accountId || "");
+  const memberAccountId = String(body.memberAccountId || "");
+  const enabled = body.enabled === true;
+  if (!/^\d{12}$/.test(memberAccountId)) fail("客户账号 ID 必须是 12 位数字");
+  const account = await requireAccount(accountId);
+  const organization = await context(account);
+  if (memberAccountId === organization.managementAccountId) fail("不能修改 Organization 管理账号");
+  const member = await organizationMember(organization.client, memberAccountId);
+  if (!member || member.Status === "SUSPENDED" || member.State === "SUSPENDED") fail("客户账号不存在或已停用", 404);
+
+  const previousExemptions = { ...(account.restrictionExemptions || {}) };
+  const nextExemptions = { ...previousExemptions };
+  if (enabled) delete nextExemptions[memberAccountId];
+  else nextExemptions[memberAccountId] = {
+    createdAt: previousExemptions[memberAccountId]?.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    reason: "Manual guardrail exemption",
+  };
+  await saveCloudSweepExemptions(account, nextExemptions);
+
+  try {
+    const result = await syncDirectGuardrails(account);
+    const current = result.members.find((item) => item.accountId === memberAccountId);
+    if (!current) fail("同步后未找到该客户账号", 404);
+    const message = enabled ? `已给 ${memberAccountId} 添加 5 项限制` : `已取消 ${memberAccountId} 的 5 项限制`;
+    await recordRun(accountId, "success", message);
+    await recordOperation({
+      account,
+      mode: "manual",
+      status: "success",
+      checked: result.checked,
+      moved: 1,
+      skipped: result.skipped,
+      message,
+      movedAccounts: [{ accountId: memberAccountId, name: member.Name || memberAccountId, email: member.Email || "", sourceParentName: enabled ? "已取消" : "已限制", destinationParentName: enabled ? "已限制" : "已取消" }],
+    });
+    return { result: { ...result, message }, discovery: { account: publicAccount(account), policyName: restrictedPolicyName, policyId: result.policyId }, members: result.members, member: current };
+  } catch (error) {
+    await saveCloudSweepExemptions(account, previousExemptions).catch((rollbackError) => console.error("Failed to rollback guardrail exemption", rollbackError));
+    throw error;
+  }
+}
+
+async function findMember(body) {
+  const memberAccountId = String(body.memberAccountId || "");
+  if (!/^\d{12}$/.test(memberAccountId)) fail("请输入 12 位客户账号 ID");
+  const located = await locateCloudSweepMemberInternal(memberAccountId);
+  if (!located.member) fail(`未在已接入的 ${located.searchedPayers} 个代付 Organization 中找到客户账号 ${memberAccountId}`, 404);
+  const result = await discoverAccount(located.payer.accountId, { force: true });
+  return { ...result, selectedAccountId: located.payer.accountId, memberAccountId };
 }
 
 async function organizationMember(client, memberAccountId) {
@@ -455,13 +524,14 @@ async function cloudSweepPolicyScope(value) {
 
 async function saveCloudSweepExemptions(payer, exemptions) {
   const payload = JSON.stringify(exemptions);
-  if (Buffer.byteLength(payload, "utf8") > 300000) fail("CloudSweep SCP 豁免记录过大，请先整理历史记录");
+  if (Buffer.byteLength(payload, "utf8") > 300000) fail("客户限制豁免记录过大，请先整理历史记录");
   await dynamodb.send(new UpdateItemCommand({
     TableName: accountsTable,
     Key: { accountId: { S: payer.accountId } },
-    UpdateExpression: "SET cloudSweepRestrictionExemptions=:exemptions, ouAutomationUpdatedAt=:updated",
+    UpdateExpression: "SET guardrailExemptions=:exemptions, ouAutomationUpdatedAt=:updated",
     ExpressionAttributeValues: { ":exemptions": { S: payload }, ":updated": { S: new Date().toISOString() } },
   }));
+  payer.restrictionExemptions = exemptions;
   payer.cloudSweepRestrictionExemptions = exemptions;
 }
 
@@ -536,17 +606,6 @@ export async function runScheduledOuAutomation() {
   const accounts = await listAccounts();
   const results = [];
   for (const account of accounts) {
-    if (!account.configured) {
-      try {
-        await initializeExistingOuMapping(account);
-      } catch (error) {
-        const message = `未执行扫描：${error.message || "OU 映射尚未配置"}`;
-        await recordRun(account.accountId, "failed", message);
-        await recordOperation({ account, mode: "automatic", status: "failed", checked: 0, moved: 0, skipped: 0, message });
-        results.push({ accountId: account.accountId, skipped: true, error: message });
-        continue;
-      }
-    }
     try { results.push(await reconcile(account.accountId)); } catch (error) { results.push({ accountId: account.accountId, error: error.message || "Reconciliation failed" }); }
   }
   return { accounts: results.length, results };
@@ -558,7 +617,9 @@ export async function handleOuAutomationRequest({ method, body, identity }) {
   if (identity?.role !== "super_admin" && identity?.role !== "admin") fail("Administrator permission required", 403);
   if (method === "GET") return { accounts: await listAccounts(), targetGroups: [...targetGroupNames] };
   if (method !== "POST") fail("Method not allowed", 405);
-  if (body.action === "discover") return discoverAccount(String(body.accountId || ""));
+  if (body.action === "discover") return discoverAccount(String(body.accountId || ""), { force: body.force === true });
+  if (body.action === "find-member") return findMember(body);
+  if (body.action === "set-member-restriction") return setMemberRestriction(body);
   if (body.action === "ou-options") return { discovery: publicDiscovery(await inspect(String(body.accountId || ""))) };
   if (body.action === "initialize") return initialize(body);
   if (body.action === "history") return { history: await movementHistory(String(body.accountId || "")) };
@@ -567,7 +628,7 @@ export async function handleOuAutomationRequest({ method, body, identity }) {
     if (body.confirmed !== true) fail("必须明确确认后才能移动子账号");
     return { location: await releaseCloudSweepMemberRestrictions(body) };
   }
-  if (body.action === "run") return { result: await reconcile(String(body.accountId || ""), { allMembers: true, mode: "manual" }) };
+  if (body.action === "run") return { result: await reconcile(String(body.accountId || ""), { mode: "manual" }) };
   if (body.action === "run-all") return runScheduledOuAutomation();
   fail("Invalid OU automation action");
 }
