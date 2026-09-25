@@ -587,7 +587,7 @@ case "$ACCOUNT_MODE" in
   organization-member) echo "检测结果：Organization 成员账号，仅安装基础账号功能" ;;
   *) echo "检测结果：无 Organization 的独立账号，仅安装基础账号功能" ;;
 esac
-`;const organizationFeatures=accountType==='pma'?AUTOMATION_ROLE_PROVISION_FRAGMENT:`${OU_AUTOMATION_PROVISION_FRAGMENT}\n${MFA_RECOVERY_PROVISION_FRAGMENT}`;const billingTransferFeatures=accountType==='cma'?BILLING_TRANSFER_PROVISION_FRAGMENT:'';const script=`set -e
+`;const organizationFeatures=accountType==='pma'?AUTOMATION_ROLE_PROVISION_FRAGMENT:`${OU_AUTOMATION_PROVISION_FRAGMENT}\n${MFA_RECOVERY_PROVISION_FRAGMENT}`;const billingTransferFeatures=accountType==='pma'||accountType==='cma'?BILLING_TRANSFER_PROVISION_FRAGMENT:'';const script=`set -e
 
 export AWS_PAGER=""
 export AWS_CLI_AUTO_PROMPT=off
