@@ -123,7 +123,12 @@ async function listScps(client, rootId) {
   if (result.some((policy) => policy.Name === "FullAWSAccess")) return result;
 
   try { await client.send(new EnablePolicyTypeCommand({ RootId: rootId, PolicyType: "SERVICE_CONTROL_POLICY" })); }
-  catch (error) { if (error?.name !== "DuplicatePolicyTypeAttachmentException") throw error; }
+  catch (error) {
+    if (error?.name !== "DuplicatePolicyTypeAttachmentException") {
+      if (String(error?.message || "").includes("cannot enable the specified policy type")) fail("该 Organization 未开启“所有功能”，AWS 不允许使用 SCP");
+      throw error;
+    }
+  }
 
   for (let attempt = 0; attempt < 6; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
