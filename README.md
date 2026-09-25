@@ -2,6 +2,8 @@
 
 AWS 多账号统一访问中心。账号记录由 DynamoDB 保存，控制台临时会话由 Lambda Broker 和 STS 签发。
 
+OU 自动化还向 CloudSweep 提供管理员确认的 SCP 整改接口：只在子账号扫描遇到明确的 SCP 拒绝后，定位所属代付 Organization，将该子账号移到 Root，解除直接挂载的非 `FullAWSAccess` SCP，并写入持久豁免以防自动归位。Root 级共享 SCP 不会被自动修改。
+
 ## Docker
 
 ```bash

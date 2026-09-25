@@ -1,6 +1,6 @@
 import { DynamoDBClient, GetItemCommand, PutItemCommand, QueryCommand, ScanCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
 import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
-import { AttachPolicyCommand, CreateOrganizationalUnitCommand, CreatePolicyCommand, DeletePolicyCommand, DescribeOrganizationCommand, DescribePolicyCommand, DetachPolicyCommand, EnablePolicyTypeCommand, ListAccountsForParentCommand, ListOrganizationalUnitsForParentCommand, ListPoliciesCommand, ListPoliciesForTargetCommand, ListRootsCommand, ListTargetsForPolicyCommand, MoveAccountCommand, OrganizationsClient, UpdatePolicyCommand } from "@aws-sdk/client-organizations";
+import { AttachPolicyCommand, CreateOrganizationalUnitCommand, CreatePolicyCommand, DeletePolicyCommand, DescribeOrganizationCommand, DescribePolicyCommand, DetachPolicyCommand, EnablePolicyTypeCommand, ListAccountsCommand, ListAccountsForParentCommand, ListOrganizationalUnitsForParentCommand, ListParentsCommand, ListPoliciesCommand, ListPoliciesForTargetCommand, ListRootsCommand, ListTargetsForPolicyCommand, MoveAccountCommand, OrganizationsClient, UpdatePolicyCommand } from "@aws-sdk/client-organizations";
 
 const dynamodb = new DynamoDBClient({});
 const sts = new STSClient({});
@@ -23,6 +23,7 @@ function normalized(value) { return String(value || "").trim().replace(/\s+/g, "
 function canonicalGroupName(name) { return name === "CMA组" ? "PMA" : name; }
 function itemAccountType(item, groupName) { return item.accountType?.S || (pmaGroupNames.has(groupName) ? "cma" : ""); }
 function supportsOu(item, groupName) { return groupName === "老代付组" || (pmaGroupNames.has(groupName) && itemAccountType(item, groupName) === "cma"); }
+function parseJson(value, fallback) { try { return JSON.parse(value || ""); } catch { return fallback; } }
 
 async function requireAccount(accountId) {
   if (!/^\d{12}$/.test(String(accountId || ""))) fail("Invalid AWS account ID");
@@ -35,8 +36,9 @@ async function requireAccount(accountId) {
   const accountType = itemAccountType(accountResult.Item, groupName);
   const temporaryOuId = accountResult.Item.temporaryOuId?.S || "";
   const restrictedOuId = accountResult.Item.restrictedOuId?.S || "";
-  const memberCache = (() => { try { return JSON.parse(accountResult.Item.ouMemberCache?.S || "null"); } catch { return null; } })();
-  return { accountId, remark: accountResult.Item.remark?.S || accountResult.Item.name?.S || accountId, groupId, groupName: canonicalGroupName(groupName), accountType, temporaryOuId, restrictedOuId, configured: Boolean(temporaryOuId && restrictedOuId), lastRunAt: accountResult.Item.ouAutomationLastRunAt?.S || "", lastStatus: accountResult.Item.ouAutomationLastStatus?.S || "", memberCache };
+  const memberCache = parseJson(accountResult.Item.ouMemberCache?.S, null);
+  const cloudSweepRestrictionExemptions = parseJson(accountResult.Item.cloudSweepRestrictionExemptions?.S, {});
+  return { accountId, remark: accountResult.Item.remark?.S || accountResult.Item.name?.S || accountId, groupId, groupName: canonicalGroupName(groupName), accountType, temporaryOuId, restrictedOuId, configured: Boolean(temporaryOuId && restrictedOuId), lastRunAt: accountResult.Item.ouAutomationLastRunAt?.S || "", lastStatus: accountResult.Item.ouAutomationLastStatus?.S || "", memberCache, cloudSweepRestrictionExemptions };
 }
 
 async function listAccounts() {
@@ -88,7 +90,7 @@ async function inspect(accountId) {
   return { ...organization, account, ous, temporaryOu, restrictedOu, temporaryOuId: temporaryOu?.id || "", restrictedOuId: restrictedOu?.id || "" };
 }
 
-function publicAccount(account) { const { memberCache, ...value } = account; return value; }
+function publicAccount(account) { const value = { ...account }; delete value.memberCache; delete value.cloudSweepRestrictionExemptions; return value; }
 function publicDiscovery(value) { return { account: publicAccount(value.account), ous: value.ous || [], temporaryOu: value.temporaryOu || null, restrictedOu: value.restrictedOu || null, temporaryOuId: value.temporaryOuId, restrictedOuId: value.restrictedOuId }; }
 
 async function resolveOu(value, selectedId, name, allowCreate) {
@@ -156,11 +158,6 @@ async function attachedScps(client, targetId) {
 async function attach(client, targetId, policyId) {
   const policies = await attachedScps(client, targetId);
   if (!policies.some((policy) => policy.Id === policyId)) await client.send(new AttachPolicyCommand({ PolicyId: policyId, TargetId: targetId }));
-}
-
-async function detachIfAttached(client, targetId, policyId) {
-  const policies = await attachedScps(client, targetId);
-  if (policies.some((policy) => policy.Id === policyId)) await client.send(new DetachPolicyCommand({ PolicyId: policyId, TargetId: targetId }));
 }
 
 async function policyTargets(client, policyId) {
@@ -315,7 +312,9 @@ async function reconcile(accountId, { allMembers = false, mode = "automatic" } =
   let checked = 0;
   let moved = 0;
   let skipped = 0;
+  let held = 0;
   const movedAccounts = [];
+  const heldAccountIds = new Set(Object.keys(account.cloudSweepRestrictionExemptions || {}));
   try {
     const organization = await context(account);
     const ous = allMembers ? await rootOus(organization.client, organization.rootId) : [];
@@ -333,19 +332,21 @@ async function reconcile(accountId, { allMembers = false, mode = "automatic" } =
     const movementContext = { ...organization, account, temporaryOuId: account.temporaryOuId, restrictedOuId: account.restrictedOuId, ous };
     checked = candidates.length;
     for (const candidate of candidates) {
+      if (heldAccountIds.has(candidate.member.Id)) { skipped += 1; held += 1; continue; }
       if (candidate.parentId === account.restrictedOuId) { skipped += 1; continue; }
       await organization.client.send(new MoveAccountCommand({ AccountId: candidate.member.Id, SourceParentId: candidate.parentId, DestinationParentId: account.restrictedOuId }));
       movedAccounts.push({ accountId: candidate.member.Id, name: candidate.member.Name || candidate.member.Id, email: candidate.member.Email || "", sourceParentName: candidate.parentName, destinationParentName: restrictedName });
       moved += 1;
     }
     if (Array.isArray(account.memberCache?.members)) {
-      const movedDirectory = new Map(candidates.filter((candidate) => candidate.parentId !== account.restrictedOuId).map(({ member }) => [member.Id, memberDirectoryEntry(movementContext, member, account.restrictedOuId)]));
+      const movedDirectory = new Map(candidates.filter((candidate) => candidate.parentId !== account.restrictedOuId && !heldAccountIds.has(candidate.member.Id)).map(({ member }) => [member.Id, memberDirectoryEntry(movementContext, member, account.restrictedOuId)]));
       const directory = account.memberCache.members.map((member) => movedDirectory.get(member.accountId) || member);
       const cachedIds = new Set(directory.map((member) => member.accountId));
       for (const [memberId, member] of movedDirectory) if (!cachedIds.has(memberId)) directory.push(member);
       await saveMemberCache(account, directory.sort((left, right) => left.name.localeCompare(right.name, "zh-CN") || left.accountId.localeCompare(right.accountId)));
     }
-    const message = allMembers ? `共检查 ${checked} 个账号，归位 ${moved} 个，已在禁止 SP/RI ${skipped} 个` : `临时 OU ${checked} 个账号，归位 ${moved} 个`;
+    const heldText = held ? `，CloudSweep SCP 豁免 ${held} 个` : "";
+    const message = allMembers ? `共检查 ${checked} 个账号，归位 ${moved} 个，跳过 ${skipped} 个${heldText}` : `临时 OU ${checked} 个账号，归位 ${moved} 个${heldText}`;
     await recordRun(accountId, "success", message);
     await recordOperation({ account, mode, status: "success", checked, moved, skipped, message, movedAccounts });
     return { accountId, checked, moved, skipped, message };
@@ -364,6 +365,171 @@ async function initializeExistingOuMapping(account) {
   if (!value.restrictedOu) missing.push(`“${restrictedName}”`);
   if (missing.length > 0) fail(`未找到唯一的 ${missing.join(" 和 ")} OU，请先在页面选择 OU 映射`);
   await configureFromInspection(value, { temporaryOuId: value.temporaryOu.id, restrictedOuId: value.restrictedOu.id });
+}
+
+async function organizationMember(client, memberAccountId) {
+  let NextToken;
+  do {
+    const page = await client.send(new ListAccountsCommand({ NextToken }));
+    const member = (page.Accounts || []).find((item) => item.Id === memberAccountId);
+    if (member) return member;
+    NextToken = page.NextToken;
+  } while (NextToken);
+  return null;
+}
+
+async function locateMemberInPayer(payer, memberAccountId) {
+  const organization = await context(payer);
+  if (memberAccountId === organization.managementAccountId) return null;
+  const member = await organizationMember(organization.client, memberAccountId);
+  if (!member) return null;
+  const parent = (await organization.client.send(new ListParentsCommand({ ChildId: memberAccountId }))).Parents?.[0];
+  if (!parent?.Id) fail(`找不到子账号 ${memberAccountId} 当前所在的 Root/OU`);
+  const placement = parent.Id === payer.temporaryOuId ? "temporary" : parent.Id === payer.restrictedOuId ? "restricted" : "other";
+  const parentName = placement === "temporary" ? temporaryName : placement === "restricted" ? restrictedName : parent.Type === "ROOT" ? "Root" : parent.Id;
+  return { payer, organization, member, parentId: parent.Id, parentName, placement };
+}
+
+async function locateCloudSweepMemberInternal(memberAccountId) {
+  if (!/^\d{12}$/.test(String(memberAccountId || ""))) fail("子账号 ID 必须是 12 位数字");
+  const directory = await listAccounts();
+  const payers = [];
+  for (const entry of directory) {
+    try { payers.push(await requireAccount(entry.accountId)); }
+    catch { /* 目录可能在扫描期间被删除，继续检查其他代付 */ }
+  }
+  payers.sort((left, right) => {
+    const leftCached = Array.isArray(left.memberCache?.members) && left.memberCache.members.some((item) => item.accountId === memberAccountId);
+    const rightCached = Array.isArray(right.memberCache?.members) && right.memberCache.members.some((item) => item.accountId === memberAccountId);
+    return Number(rightCached) - Number(leftCached);
+  });
+
+  let lookupFailures = 0;
+  for (let offset = 0; offset < payers.length; offset += 4) {
+    const batch = await Promise.all(payers.slice(offset, offset + 4).map(async (payer) => {
+      try { return await locateMemberInPayer(payer, memberAccountId); }
+      catch (error) { lookupFailures += 1; console.error("CloudSweep member lookup failed", { payerAccountId: payer.accountId, memberAccountId, error: error?.message || error }); return null; }
+    }));
+    const matches = batch.filter(Boolean);
+    if (matches.length > 1) fail(`子账号 ${memberAccountId} 匹配到多个代付 Organization，已停止自动操作`);
+    if (matches.length === 1) return { ...matches[0], searchedPayers: Math.min(offset + 4, payers.length), lookupFailures };
+  }
+  return { member: null, searchedPayers: payers.length, lookupFailures };
+}
+
+function publicCloudSweepLocation(value, memberAccountId) {
+  if (!value.member) return { found: false, memberAccountId, searchedPayers: value.searchedPayers, lookupFailures: value.lookupFailures };
+  const rootRestrictions = value.rootRestrictions || [];
+  const directRestrictions = value.directRestrictions || [];
+  return {
+    found: true,
+    memberAccountId,
+    memberName: value.member.Name || memberAccountId,
+    payerAccountId: value.payer.accountId,
+    payerRemark: value.payer.remark,
+    currentParentId: value.parentId,
+    currentParentName: value.parentName,
+    placement: value.placement,
+    rootId: value.organization.rootId,
+    rootRestrictions: rootRestrictions.map((policy) => ({ id: policy.Id, name: policy.Name })),
+    directRestrictions: directRestrictions.map((policy) => ({ id: policy.Id, name: policy.Name })),
+    movable: rootRestrictions.length === 0,
+    restrictionExempted: Boolean(value.payer.cloudSweepRestrictionExemptions?.[memberAccountId]),
+    searchedPayers: value.searchedPayers,
+    lookupFailures: value.lookupFailures,
+  };
+}
+
+async function cloudSweepPolicyScope(value) {
+  const [rootPolicies, directPolicies] = await Promise.all([
+    attachedScps(value.organization.client, value.organization.rootId),
+    attachedScps(value.organization.client, value.member.Id),
+  ]);
+  const unrestricted = (policy) => policy.Name === "FullAWSAccess";
+  return {
+    ...value,
+    rootRestrictions: rootPolicies.filter((policy) => !unrestricted(policy)),
+    directRestrictions: directPolicies.filter((policy) => !unrestricted(policy)),
+  };
+}
+
+async function saveCloudSweepExemptions(payer, exemptions) {
+  const payload = JSON.stringify(exemptions);
+  if (Buffer.byteLength(payload, "utf8") > 300000) fail("CloudSweep SCP 豁免记录过大，请先整理历史记录");
+  await dynamodb.send(new UpdateItemCommand({
+    TableName: accountsTable,
+    Key: { accountId: { S: payer.accountId } },
+    UpdateExpression: "SET cloudSweepRestrictionExemptions=:exemptions, ouAutomationUpdatedAt=:updated",
+    ExpressionAttributeValues: { ":exemptions": { S: payload }, ":updated": { S: new Date().toISOString() } },
+  }));
+  payer.cloudSweepRestrictionExemptions = exemptions;
+}
+
+async function releaseCloudSweepMemberRestrictions(body) {
+  const memberAccountId = String(body.memberAccountId || "");
+  const located = await locateCloudSweepMemberInternal(memberAccountId);
+  const value = located.member ? await cloudSweepPolicyScope(located) : located;
+  if (!value.member) fail(`未在已接入的 ${value.searchedPayers} 个代付 Organization 中找到子账号 ${memberAccountId}`, 404);
+  if (body.expectedPayerAccountId && body.expectedPayerAccountId !== value.payer.accountId) fail("子账号所属代付已变更，请重新检查");
+  if (body.expectedSourceParentId && body.expectedSourceParentId !== value.parentId) fail("子账号所在 OU 已变更，请重新检查");
+  if (value.rootRestrictions.length) fail(`Organization Root 上仍有共享 SCP 限制：${value.rootRestrictions.map((policy) => policy.Name || policy.Id).join("、")}。不能只对一个子账号安全解除`);
+
+  const previousExemptions = { ...(value.payer.cloudSweepRestrictionExemptions || {}) };
+  const nextExemptions = {
+    ...previousExemptions,
+    [memberAccountId]: {
+      createdAt: previousExemptions[memberAccountId]?.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      reason: "CloudSweep SCP scan remediation",
+      taskId: String(body.taskId || "").slice(0, 100),
+    },
+  };
+  await saveCloudSweepExemptions(value.payer, nextExemptions);
+
+  const detachedPolicies = [];
+  for (const policy of value.directRestrictions) {
+    if (!policy.Id) continue;
+    await value.organization.client.send(new DetachPolicyCommand({ PolicyId: policy.Id, TargetId: memberAccountId }));
+    detachedPolicies.push({ id: policy.Id, name: policy.Name || policy.Id });
+  }
+
+  let moved = false;
+  try {
+    if (value.parentId !== value.organization.rootId) {
+      await value.organization.client.send(new MoveAccountCommand({ AccountId: memberAccountId, SourceParentId: value.parentId, DestinationParentId: value.organization.rootId }));
+      moved = true;
+    }
+  } catch (error) {
+    await saveCloudSweepExemptions(value.payer, previousExemptions).catch((rollbackError) => console.error("Failed to rollback CloudSweep exemption", rollbackError));
+    throw error;
+  }
+
+  if (Array.isArray(value.payer.memberCache?.members)) {
+    const members = value.payer.memberCache.members.map((member) => member.accountId === memberAccountId
+      ? { ...member, parentId: value.organization.rootId, parentName: "Root", placement: "ungrouped", cloudSweepExemption: true }
+      : member);
+    await saveMemberCache(value.payer, members);
+  }
+  const detachedText = detachedPolicies.length ? `，并解除 ${detachedPolicies.length} 个直接挂载的限制 SCP` : "";
+  const message = moved
+    ? `已将 ${memberAccountId} 从 ${value.parentName} 移动到 Organization Root${detachedText}；CloudSweep SCP 豁免已长期保留，自动归位任务不会将其移回`
+    : `${memberAccountId} 已在 Organization Root${detachedText}；CloudSweep SCP 豁免已长期保留`;
+  await recordOperation({
+    account: value.payer,
+    mode: "cloudsweep",
+    status: "success",
+    checked: 1,
+    moved: moved ? 1 : 0,
+    skipped: moved ? 0 : 1,
+    message,
+    movedAccounts: moved ? [{ accountId: memberAccountId, name: value.member.Name || memberAccountId, email: value.member.Email || "", sourceParentName: value.parentName, destinationParentName: "Root" }] : [],
+  });
+  return { ...publicCloudSweepLocation({ ...value, parentId: value.organization.rootId, parentName: "Root", placement: "other", directRestrictions: [] }, memberAccountId), moved, restrictionExempted: true, detachedPolicies, message };
+}
+
+async function locateCloudSweepMember(memberAccountId) {
+  const value = await locateCloudSweepMemberInternal(memberAccountId);
+  return publicCloudSweepLocation(value.member ? await cloudSweepPolicyScope(value) : value, memberAccountId);
 }
 
 export async function runScheduledOuAutomation() {
@@ -396,6 +562,11 @@ export async function handleOuAutomationRequest({ method, body, identity }) {
   if (body.action === "ou-options") return { discovery: publicDiscovery(await inspect(String(body.accountId || ""))) };
   if (body.action === "initialize") return initialize(body);
   if (body.action === "history") return { history: await movementHistory(String(body.accountId || "")) };
+  if (body.action === "cloudsweep-locate") return { location: await locateCloudSweepMember(String(body.memberAccountId || "")) };
+  if (body.action === "cloudsweep-release-restrictions") {
+    if (body.confirmed !== true) fail("必须明确确认后才能移动子账号");
+    return { location: await releaseCloudSweepMemberRestrictions(body) };
+  }
   if (body.action === "run") return { result: await reconcile(String(body.accountId || ""), { allMembers: true, mode: "manual" }) };
   if (body.action === "run-all") return runScheduledOuAutomation();
   fail("Invalid OU automation action");
