@@ -9,6 +9,7 @@ import { ADMIN_ROLE_TRUST_FRAGMENT } from './admin-role-provision';
 import { SupportBillingPanel } from './support-billing-panel';
 import { SUPPORT_BILLING_PROVISION_FRAGMENT } from './support-billing-provision';
 import { BillingAccessGuide } from './billing-access-guide';
+import { BILLING_TRANSFER_PROVISION_FRAGMENT } from './billing-transfer-provision';
 
 type AccountType = 'pma' | 'cma' | 'apn' | '';
 type AccountRecord = { accountId: string; remark?: string; name?: string; region: string; groupId?: string; accountType?: AccountType; billingAccessConfirmedAt?: string; billingAccessReminderRequired?: boolean };
@@ -586,7 +587,7 @@ case "$ACCOUNT_MODE" in
   organization-member) echo "检测结果：Organization 成员账号，仅安装基础账号功能" ;;
   *) echo "检测结果：无 Organization 的独立账号，仅安装基础账号功能" ;;
 esac
-`;const organizationFeatures=accountType==='pma'?AUTOMATION_ROLE_PROVISION_FRAGMENT:`${OU_AUTOMATION_PROVISION_FRAGMENT}\n${MFA_RECOVERY_PROVISION_FRAGMENT}`;const script=`set -e
+`;const organizationFeatures=accountType==='pma'?AUTOMATION_ROLE_PROVISION_FRAGMENT:`${OU_AUTOMATION_PROVISION_FRAGMENT}\n${MFA_RECOVERY_PROVISION_FRAGMENT}`;const billingTransferFeatures=accountType==='cma'?BILLING_TRANSFER_PROVISION_FRAGMENT:'';const script=`set -e
 
 export AWS_PAGER=""
 export AWS_CLI_AUTO_PROMPT=off
@@ -637,6 +638,7 @@ EOF_ORG
 aws iam put-role-policy --role-name TontianOperationsRole --policy-name TontianOrganizationOperations --policy-document file:///tmp/tontian-organization-operations.json
 ${organizationFeatures}
 ${SUPPORT_BILLING_PROVISION_FRAGMENT}
+${billingTransferFeatures}
 else
   aws iam delete-role-policy --role-name TontianOperationsRole --policy-name TontianOrganizationOperations >/dev/null 2>&1 || true
   aws iam delete-role-policy --role-name TontianOrganizationAutomationRole --policy-name TontianOrganizationAutomationPolicy >/dev/null 2>&1 || true
