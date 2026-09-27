@@ -21,6 +21,15 @@ require_command aws
 require_command jq
 require_command zip
 
+aws() {
+  command aws \
+    --cli-connect-timeout "${AWS_CLI_CONNECT_TIMEOUT_SECONDS:-10}" \
+    --cli-read-timeout "${AWS_CLI_READ_TIMEOUT_SECONDS:-45}" \
+    "$@"
+}
+export AWS_RETRY_MODE="${AWS_RETRY_MODE:-standard}"
+export AWS_MAX_ATTEMPTS="${AWS_MAX_ATTEMPTS:-4}"
+
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 BRIDGE_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${SOURCE_ROLE_NAME}"
 SOURCE_FUNCTION_ARN="arn:aws:lambda:${AWS_REGION}:${ACCOUNT_ID}:function:${SOURCE_FUNCTION}"
