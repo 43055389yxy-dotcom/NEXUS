@@ -238,6 +238,11 @@ configure_function() {
   aws logs create-log-group --region "$AWS_REGION" --log-group-name "/aws/lambda/${function_name}" >/dev/null 2>&1 || true
   aws logs put-retention-policy --region "$AWS_REGION" --log-group-name "/aws/lambda/${function_name}" --retention-in-days 30
 
+  verify_function "$component" "$function_name"
+}
+
+verify_function() {
+  local component="$1" function_name="$2"
   local response="$WORK_DIR/${component}-health.json"
   aws lambda invoke \
     --region "$AWS_REGION" \
@@ -268,6 +273,12 @@ configure_function() {
     exit 1
   fi
   echo "Healthy: $function_name"
+}
+
+verify_selected() {
+  while IFS='|' read -r component function_name _handler _role_name _rule _target _input; do
+    verify_function "$component" "$function_name"
+  done < <(selected_definitions)
 }
 
 deploy_all() {
@@ -328,7 +339,7 @@ case "$MODE" in
     show_status
     ;;
   cutover)
-    deploy_all
+    verify_selected
     set_targets new
     show_status
     ;;

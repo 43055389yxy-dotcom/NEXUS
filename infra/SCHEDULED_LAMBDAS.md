@@ -17,7 +17,7 @@ Run from the repository root with the intended AWS profile already selected:
 # Create or update roles/functions and perform side-effect-free health checks.
 AWS_REGION=us-east-1 ./infra/deploy-scheduled-lambdas.sh deploy
 
-# Deploy, health-check, then move the four existing EventBridge targets.
+# Re-check the already deployed functions, then move the existing EventBridge targets.
 AWS_REGION=us-east-1 ./infra/deploy-scheduled-lambdas.sh cutover
 
 # Point all four rules back to TontianConsoleBroker without deleting anything.
