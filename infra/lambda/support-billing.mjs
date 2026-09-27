@@ -679,8 +679,26 @@ function beijingDate(value = new Date()) {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
 }
 
-function scannedSuccessfullyToday(payer) {
-  return Boolean(payer.snapshot && payer.lastScanAt && payer.lastStatus === "success" && beijingDate(payer.lastScanAt) === beijingDate());
+function scannedSuccessfullyToday(payer, now = new Date()) {
+  return Boolean(payer.snapshot && payer.lastScanAt && payer.lastStatus === "success" && beijingDate(payer.lastScanAt) === beijingDate(now));
+}
+
+function beijingDayNumber(value) {
+  const parts = chinaDateParts(value);
+  return Math.floor(Date.UTC(parts.year, parts.month - 1, parts.day) / 86400000);
+}
+
+export function supportBillingScheduleDecision(payer, now = new Date()) {
+  const current = chinaDateParts(now);
+  const daysInMonth = new Date(Date.UTC(current.year, current.month, 0)).getUTCDate();
+  const monthEndDaily = current.day >= daysInMonth - 2;
+  if (scannedSuccessfullyToday(payer, now)) return { due: false, reason: "already-successful-today", monthEndDaily, elapsedDays: 0 };
+
+  const lastAutomatic = new Date(payer.lastAutoSyncAt || "");
+  const elapsedDays = Number.isNaN(lastAutomatic.getTime()) ? null : beijingDayNumber(now) - beijingDayNumber(lastAutomatic);
+  if (monthEndDaily) return { due: true, reason: "month-end-daily", monthEndDaily, elapsedDays };
+  if (elapsedDays === null) return { due: true, reason: "first-automatic-scan", monthEndDaily, elapsedDays };
+  return { due: elapsedDays >= 3, reason: elapsedDays >= 3 ? "three-day-cadence" : "waiting-three-day-cadence", monthEndDaily, elapsedDays };
 }
 
 function notificationText(value) {
@@ -879,18 +897,26 @@ async function deleteAction(payer, periodKey, targets, persist = saveSnapshot) {
 
 export function isSupportBillingScheduledEvent(event) { return event?.task === "support-billing"; }
 
-export async function runScheduledSupportBilling() {
+export async function runScheduledSupportBilling({ now = new Date() } = {}) {
   const payers = await listPayers(); const results = [];
   for (const payer of payers) {
+    const schedule = supportBillingScheduleDecision(payer, now);
+    if (!schedule.due) {
+      results.push({ accountId: payer.accountId, payerName: payer.remark, skipped: true, skipReason: schedule.reason, schedule });
+      continue;
+    }
     try {
       const value = await syncAction(payer, "current", null, true, saveSnapshot, false);
-      results.push({ accountId: payer.accountId, payerName: payer.remark, ...value.summary, changes: value.changes, warnings: value.warnings, scan: value.scan });
+      results.push({ accountId: payer.accountId, payerName: payer.remark, ...value.summary, changes: value.changes, warnings: value.warnings, scan: value.scan, schedule });
     }
-    catch (error) { await markFailure(payer, error?.message || "自动对账失败"); results.push({ accountId: payer.accountId, payerName: payer.remark, error: error?.message || "自动对账失败" }); }
+    catch (error) { await markFailure(payer, error?.message || "自动对账失败"); results.push({ accountId: payer.accountId, payerName: payer.remark, error: error?.message || "自动对账失败", schedule }); }
   }
-  try { await sendDailySupportSyncNotification(results); }
-  catch (error) { console.error("Support billing daily summary notification failed", error); }
-  return { accounts: results.length, results };
+  const executed = results.filter((item) => !item.skipped);
+  if (executed.length) {
+    try { await sendDailySupportSyncNotification(executed); }
+    catch (error) { console.error("Support billing scheduled summary notification failed", error); }
+  }
+  return { accounts: results.length, executed: executed.length, skipped: results.length - executed.length, results };
 }
 
 export async function runLocalSupportBillingAction({ payer: source, state = {}, body, persist }) {
