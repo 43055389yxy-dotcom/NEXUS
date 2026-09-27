@@ -307,18 +307,46 @@ async function loadWebhookUrl() {
 export function creditAlertKind(change) {
   if (change.changes.some((item) => item.type === "new")) return "new";
   if (change.changes.some((item) => item.field === "state" && item.after === "expired")) return "expired";
-  if (change.changes.some((item) => item.type === "expiring")) return "expiring";
+  if (change.credit.state === "active" && number(change.credit.estimatedAmount?.currencyAmount) > 0 && change.changes.some((item) => item.type === "expiring")) return "expiring";
   return "";
 }
 
+function expiryLabel(days, endDate) {
+  const date = endDate || "无到期日";
+  if (days === 0) return `今天到期（${date}）`;
+  if (days === 1) return `明天到期（${date}）`;
+  if (typeof days === "number" && days > 1) return `${days} 天后到期（${date}）`;
+  return `到期 ${date}`;
+}
+
 function changeText(change, kind) {
-  const { account, credit, changes } = change;
+  const { credit, changes } = change;
   const endDate = credit.endDate?.slice(0, 10) || "无到期日";
-  const accountText = `${account.groupName} · ${account.name}（${account.accountId}）`;
-  if (kind === "new") return `> **新到券｜${accountText}**\n> ${credit.description}\n> 到账 ${moneyText(credit.initialAmount)} · 预计余额 ${moneyText(credit.estimatedAmount)}\n> 到期 ${endDate}`;
-  if (kind === "expired") return `> **已到期｜${accountText}**\n> ${credit.description}\n> 预计余额 ${moneyText(credit.estimatedAmount)} · 到期 ${endDate}`;
+  if (kind === "new") return [`> **新到券**｜${credit.description}`, `> 到账 ${moneyText(credit.initialAmount)}｜预计余额 ${moneyText(credit.estimatedAmount)}｜到期 ${endDate}`];
+  if (kind === "expired") return [`> **已到期**｜${credit.description}`, `> 到期 ${endDate}｜到期前预计余额 ${moneyText(credit.estimatedAmount)}`];
   const expiring = changes.find((item) => item.type === "expiring");
-  return `> **快到期｜${accountText}**\n> ${credit.description}\n> 剩余 ${expiring?.after ?? "-"} 天 · 预计余额 ${moneyText(credit.estimatedAmount)}\n> 到期 ${endDate}`;
+  return [`> **快到期**｜${credit.description}`, `> ${expiryLabel(expiring?.after, endDate)}｜预计余额 ${moneyText(credit.estimatedAmount)}`];
+}
+
+export function creditNotificationContent(alerts, checkedAt) {
+  const counts = alerts.reduce((result, item) => ({ ...result, [item.kind]: result[item.kind] + 1 }), { new: 0, expiring: 0, expired: 0 });
+  const summary = [`新到券 ${counts.new}`, `快到期 ${counts.expiring}`, `已到期 ${counts.expired}`].filter((item) => !item.endsWith(" 0")).join(" · ");
+  const visible = alerts.slice(0, 20);
+  const groups = new Map();
+  for (const item of visible) {
+    const account = item.change.account;
+    const key = account.accountId;
+    if (!groups.has(key)) groups.set(key, { account, alerts: [] });
+    groups.get(key).alerts.push(item);
+  }
+  const sections = [];
+  for (const { account, alerts: accountAlerts } of groups.values()) {
+    const lines = [`> **${account.groupName} · ${account.name}（${account.accountId}）**`];
+    for (const item of accountAlerts) lines.push(...changeText(item.change, item.kind));
+    sections.push(lines.join("\n"));
+  }
+  if (alerts.length > visible.length) sections.push(`> 另有 ${alerts.length - visible.length} 项提醒，请在 NEXUS 查看`);
+  return [`**【代金券提醒】${summary}**`, ...sections, `检查时间：${checkedAt}`].join("\n\n");
 }
 
 async function notify(changes) {
@@ -328,12 +356,8 @@ async function notify(changes) {
   if (!webhookUrl) return { sent: false, reason: "not_configured" };
   const webhook = new URL(webhookUrl);
   if (webhook.protocol !== "https:" || webhook.hostname !== "qyapi.weixin.qq.com" || webhook.pathname !== "/cgi-bin/webhook/send" || !webhook.searchParams.get("key")) throw new Error("企业微信机器人地址不正确");
-  const counts = alerts.reduce((result, item) => ({ ...result, [item.kind]: result[item.kind] + 1 }), { new: 0, expiring: 0, expired: 0 });
-  const summary = [`新到券 ${counts.new}`, `快到期 ${counts.expiring}`, `已到期 ${counts.expired}`].filter((item) => !item.endsWith(" 0")).join(" · ");
-  const lines = alerts.slice(0, 20).map((item) => changeText(item.change, item.kind));
-  if (alerts.length > lines.length) lines.push(`> 另有 ${alerts.length - lines.length} 项提醒，请在 NEXUS 查看`);
   const checkedAt = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
-  const content = [`**【代金券提醒】${summary}**`, ...lines, `检查时间：${checkedAt}`].join("\n\n");
+  const content = creditNotificationContent(alerts, checkedAt);
   const response = await fetch(webhook, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ msgtype: "markdown", markdown: { content } }), signal: AbortSignal.timeout(8000) });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || Number(payload?.errcode) !== 0) throw new Error(payload?.errmsg || `企业微信通知失败：HTTP ${response.status}`);
