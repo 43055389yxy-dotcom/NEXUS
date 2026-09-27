@@ -28,3 +28,9 @@ AWS_REGION=us-east-1 ./infra/deploy-scheduled-lambdas.sh status
 ```
 
 The cutover keeps the original broker code, permissions, and Lambda invocation permissions in place for rollback. Do not delete them until the isolated functions have completed multiple production schedules successfully.
+
+The API broker key is stored in Secrets Manager as `nexus/internal-api-key`. After creating or rotating that secret, apply its least-privilege role policy and remove the legacy Lambda environment copy with:
+
+```bash
+AWS_REGION=us-east-1 ./infra/configure-broker-secret.sh
+```
