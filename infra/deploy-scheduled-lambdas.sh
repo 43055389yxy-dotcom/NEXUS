@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 MODE="${1:-deploy}"
+COMPONENT_FILTER="${2:-all}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
 SOURCE_FUNCTION="${NEXUS_BROKER_FUNCTION_NAME:-TontianConsoleBroker}"
 SOURCE_ROLE_NAME="TontianConsoleBrokerRole"
@@ -31,6 +32,17 @@ apn-monitor|NexusApnMonitorScheduled|apn-monitor-handler.handler|NexusApnMonitor
 credit-monitor|NexusCreditMonitorScheduled|credit-monitor-handler.handler|NexusCreditMonitorScheduleRole|nexus-credit-monitor-daily|NexusCreditMonitor|{"source":"nexus.credit-monitor","detail-type":"Credit Monitor"}
 ou-automation|NexusOuAutomationScheduled|ou-automation-handler.handler|NexusOuAutomationScheduleRole|nexus-daily-ou-reconciliation|nexus-ou-lambda|
 EOF
+}
+
+selected_definitions() {
+  if [[ "$COMPONENT_FILTER" == "all" ]]; then
+    definitions
+    return
+  fi
+  local selected
+  selected="$(definitions | awk -F'|' -v component="$COMPONENT_FILTER" '$1 == component')"
+  [[ -n "$selected" ]] || { echo "Unknown component: $COMPONENT_FILTER" >&2; exit 2; }
+  printf '%s\n' "$selected"
 }
 
 source_environment() {
@@ -259,7 +271,7 @@ deploy_all() {
   update_bridge_trust
   while IFS='|' read -r component function_name handler role_name _rule _target _input; do
     configure_function "$component" "$function_name" "$handler" "$role_name" "$source_json"
-  done < <(definitions)
+  done < <(selected_definitions)
 }
 
 set_targets() {
@@ -290,7 +302,7 @@ set_targets() {
     fi
     aws events put-targets --region "$AWS_REGION" --rule "$rule" --targets "file://${target_file}" >/dev/null
     echo "Target ${rule} -> ${function_arn##*:}"
-  done < <(definitions)
+  done < <(selected_definitions)
 }
 
 show_status() {
@@ -319,7 +331,7 @@ case "$MODE" in
     show_status
     ;;
   *)
-    echo "Usage: $0 [deploy|cutover|rollback|status]" >&2
+    echo "Usage: $0 [deploy|cutover|rollback|status] [all|support-billing|apn-monitor|credit-monitor|ou-automation]" >&2
     exit 2
     ;;
 esac
