@@ -203,7 +203,7 @@ configure_function() {
         --architectures arm64 \
         --environment "file://${env_file}" \
         --description "NEXUS isolated ${component} schedule" \
-        --tags Application=NEXUS Component="$component" ManagedBy=infra-script \
+        --tags "Application=NEXUS,Component=${component},ManagedBy=infra-script" \
         >/dev/null; then
         created=true
         break
