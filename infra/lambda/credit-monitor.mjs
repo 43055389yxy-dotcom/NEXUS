@@ -1,7 +1,7 @@
 import { BillingClient, GetCreditsCommand } from "@aws-sdk/client-billing";
 import { BatchWriteItemCommand, DynamoDBClient, PutItemCommand, QueryCommand, ScanCommand } from "@aws-sdk/client-dynamodb";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
-import { assumeManagedRole } from "./cross-account.mjs";
+import { assumeManagedRole, verifyManagedRoleAccess } from "./cross-account.mjs";
 
 const REGION = process.env.AWS_REGION || "us-east-1";
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE || "TontianAwsAccessAccounts";
@@ -465,6 +465,10 @@ export async function getCreditMonitorData() {
 
 export function isCreditMonitorScheduledEvent(event) {
   return event?.source === "nexus.credit-monitor" || event?.["detail-type"] === "Credit Monitor";
+}
+
+export async function preflightCreditMonitorAccess() {
+  return verifyManagedRoleAccess({ accounts: await listCreditMonitorAccounts(), roleName: BILLING_READ_ROLE, sessionPrefix: "nexus-credit-check", region: REGION });
 }
 
 export async function runScheduledCreditMonitor() {

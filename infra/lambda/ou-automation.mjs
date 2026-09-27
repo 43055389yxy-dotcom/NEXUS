@@ -1,5 +1,5 @@
 import { DynamoDBClient, GetItemCommand, PutItemCommand, QueryCommand, ScanCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
-import { assumeManagedRole } from "./cross-account.mjs";
+import { assumeManagedRole, verifyManagedRoleAccess } from "./cross-account.mjs";
 import { AttachPolicyCommand, CreateOrganizationalUnitCommand, CreatePolicyCommand, DeletePolicyCommand, DescribeOrganizationCommand, DescribePolicyCommand, DetachPolicyCommand, EnablePolicyTypeCommand, ListAccountsCommand, ListOrganizationalUnitsForParentCommand, ListParentsCommand, ListPoliciesCommand, ListPoliciesForTargetCommand, ListRootsCommand, ListTargetsForPolicyCommand, MoveAccountCommand, OrganizationsClient, UpdatePolicyCommand } from "@aws-sdk/client-organizations";
 
 const dynamodb = new DynamoDBClient({});
@@ -616,6 +616,10 @@ export async function runScheduledOuAutomation() {
     try { results.push(await reconcile(account.accountId)); } catch (error) { results.push({ accountId: account.accountId, error: error.message || "Reconciliation failed" }); }
   }
   return { accounts: results.length, results };
+}
+
+export async function preflightOuAutomationAccess() {
+  return verifyManagedRoleAccess({ accounts: await listAccounts(), roleName: automationRole, sessionPrefix: "nexus-ou-check" });
 }
 
 export function isOuAutomationScheduledEvent(event) { return event?.source === "aws.events" && event?.["detail-type"] === "Scheduled Event"; }

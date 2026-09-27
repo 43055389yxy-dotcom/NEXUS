@@ -1,6 +1,6 @@
 import { BatchWriteItemCommand, DynamoDBClient, PutItemCommand, QueryCommand, ScanCommand } from "@aws-sdk/client-dynamodb";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
-import { assumeManagedRole } from "./cross-account.mjs";
+import { assumeManagedRole, verifyManagedRoleAccess } from "./cross-account.mjs";
 import { GetAwsOpportunitySummaryCommand, GetOpportunityCommand, ListOpportunitiesCommand, PartnerCentralSellingClient } from "@aws-sdk/client-partnercentral-selling";
 import { GetBenefitApplicationCommand, ListBenefitAllocationsCommand, ListBenefitApplicationsCommand, PartnerCentralBenefitsClient } from "@aws-sdk/client-partnercentral-benefits";
 
@@ -616,6 +616,10 @@ export async function getApnMonitorData() {
 
 export function isApnMonitorScheduledEvent(event) {
   return event?.source === "nexus.apn-monitor" || event?.["detail-type"] === "APN Status Monitor";
+}
+
+export async function preflightApnMonitorAccess() {
+  return verifyManagedRoleAccess({ accounts: await findApnAccounts(), roleName: "TontianOperationsRole", sessionPrefix: "nexus-apn-check", region: REGION });
 }
 
 export async function runScheduledApnMonitor() { return refreshApnMonitor(); }

@@ -1,4 +1,4 @@
-import { isOuAutomationScheduledEvent, runScheduledOuAutomation } from "./ou-automation.mjs";
+import { isOuAutomationScheduledEvent, preflightOuAutomationAccess, runScheduledOuAutomation } from "./ou-automation.mjs";
 import { checkCrossAccountBridge } from "./cross-account.mjs";
 import { createScheduledHandler } from "./scheduled-handler.mjs";
 
@@ -7,5 +7,6 @@ export const handler = createScheduledHandler({
   matches: isOuAutomationScheduledEvent,
   run: runScheduledOuAutomation,
   checkBridge: checkCrossAccountBridge,
+  checkAccess: preflightOuAutomationAccess,
   requiredEnvironment: ["ACCOUNTS_TABLE", "GROUPS_TABLE"],
 });

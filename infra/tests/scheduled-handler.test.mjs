@@ -66,3 +66,18 @@ test("bridge healthcheck runs without executing the scheduled task", async () =>
   });
   assert.equal(calls, 0);
 });
+
+test("access healthcheck reports failures without running the task", async () => {
+  let calls = 0;
+  const handler = createScheduledHandler({
+    task: "example",
+    matches: () => true,
+    run: async () => { calls += 1; },
+    checkAccess: async () => ({ ok: false, accounts: 1, errors: [{ accountId: "123456789012", error: "denied" }] }),
+  });
+
+  const result = await handler({ accessHealthcheck: true });
+  assert.equal(result.ok, false);
+  assert.equal(result.access.errors.length, 1);
+  assert.equal(calls, 0);
+});

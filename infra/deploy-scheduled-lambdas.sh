@@ -234,6 +234,18 @@ configure_function() {
     "$response" \
     >/dev/null
   jq -e --arg account "$ACCOUNT_ID" '.ok == true and .bridge.mode == "bridge" and .bridge.account == $account and .bridge.role == "TontianConsoleBrokerRole"' "$response" >/dev/null
+  aws lambda invoke \
+    --region "$AWS_REGION" \
+    --function-name "$function_name" \
+    --cli-binary-format raw-in-base64-out \
+    --payload '{"accessHealthcheck":true}' \
+    "$response" \
+    >/dev/null
+  if ! jq -e '.ok == true and .access.ok == true' "$response" >/dev/null; then
+    jq '{task, access}' "$response" >&2
+    echo "Cross-account access check failed: $function_name" >&2
+    exit 1
+  fi
   echo "Healthy: $function_name"
 }
 

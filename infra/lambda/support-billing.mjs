@@ -4,7 +4,7 @@ import { CostExplorerClient, GetCostAndUsageCommand, GetDimensionValuesCommand }
 import { DynamoDBClient, GetItemCommand, ScanCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
 import { ListAccountsCommand, OrganizationsClient } from "@aws-sdk/client-organizations";
 import { gzipSync, gunzipSync } from "node:zlib";
-import { assumeManagedRole } from "./cross-account.mjs";
+import { assumeManagedRole, verifyManagedRoleAccess } from "./cross-account.mjs";
 
 const dynamodb = new DynamoDBClient({ maxAttempts: 6 });
 const accountsTable = process.env.ACCOUNTS_TABLE;
@@ -897,6 +897,10 @@ async function deleteAction(payer, periodKey, targets, persist = saveSnapshot) {
 }
 
 export function isSupportBillingScheduledEvent(event) { return event?.task === "support-billing"; }
+
+export async function preflightSupportBillingAccess() {
+  return verifyManagedRoleAccess({ accounts: await listPayers(), roleName: automationRole, sessionPrefix: "nexus-support-check" });
+}
 
 export async function runScheduledSupportBilling({ now = new Date() } = {}) {
   const payers = await listPayers(); const results = [];

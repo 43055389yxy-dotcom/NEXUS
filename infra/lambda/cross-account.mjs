@@ -40,6 +40,32 @@ export async function checkCrossAccountBridge({ region = "us-east-1", maxAttempt
   };
 }
 
+export async function verifyManagedRoleAccess({ accounts, roleName, sessionPrefix, region = "us-east-1", concurrency = 6 }) {
+  const accountIds = [...new Set((accounts || []).map((item) => String(item?.accountId || item || "")).filter((value) => /^\d{12}$/.test(value)))];
+  const results = new Array(accountIds.length);
+  let cursor = 0;
+  await Promise.all(Array.from({ length: Math.min(concurrency, accountIds.length) }, async () => {
+    while (cursor < accountIds.length) {
+      const index = cursor++;
+      const accountId = accountIds[index];
+      try {
+        const targetCredentials = await assumeManagedRole({
+          roleArn: `arn:aws:iam::${accountId}:role/${roleName}`,
+          sessionName: `${sessionPrefix}-${accountId}`.slice(0, 64),
+          durationSeconds: 900,
+          region,
+        });
+        const identity = await new STSClient({ region, credentials: targetCredentials }).send(new GetCallerIdentityCommand({}));
+        results[index] = { accountId, ok: identity.Account === accountId };
+      } catch (error) {
+        results[index] = { accountId, ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    }
+  }));
+  const errors = results.filter((item) => !item.ok);
+  return { ok: errors.length === 0, accounts: results.length, errors };
+}
+
 export async function assumeManagedRole({ roleArn, sessionName, durationSeconds = 900, region = "us-east-1", maxAttempts = 5 }) {
   const { client, bridgeRoleArn } = await bridgeClient({ sessionName, region, maxAttempts });
 
