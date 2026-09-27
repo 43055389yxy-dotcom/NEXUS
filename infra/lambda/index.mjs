@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { DeleteItemCommand, DynamoDBClient, GetItemCommand, PutItemCommand, ScanCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
+import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
 import { handleOuAutomationRequest, isOuAutomationScheduledEvent, runScheduledOuAutomation } from "./ou-automation.mjs";
 import { handleMfaRecoveryRequest } from "./mfa-recovery.mjs";
@@ -8,12 +9,14 @@ import { handleApnMonitorRequest, isApnMonitorScheduledEvent, runScheduledApnMon
 import { handleCreditMonitorRequest, isCreditMonitorScheduledEvent, runScheduledCreditMonitor } from "./credit-monitor.mjs";
 
 const dynamodb = new DynamoDBClient({});
+const secrets = new SecretsManagerClient({});
 const sts = new STSClient({});
 const accountsTable = process.env.ACCOUNTS_TABLE;
 const groupsTable = process.env.GROUPS_TABLE;
 const operationsAccountId = process.env.OPS_ACCOUNT_ID;
 const ADMIN_ROLES = new Set(["super_admin", "admin"]);
 const UNGROUPED = "__ungrouped";
+let internalApiKeyPromise;
 
 function response(statusCode, body) {
   return {
@@ -29,8 +32,24 @@ function response(statusCode, body) {
   };
 }
 
-function authorized(event) {
-  const expected = process.env.INTERNAL_API_KEY || "";
+async function internalApiKey() {
+  const secretId = String(process.env.INTERNAL_API_KEY_SECRET_ID || "").trim();
+  if (!secretId) return process.env.INTERNAL_API_KEY || "";
+  if (!internalApiKeyPromise) {
+    internalApiKeyPromise = secrets.send(new GetSecretValueCommand({ SecretId: secretId })).then((value) => {
+      if (typeof value.SecretString === "string") return value.SecretString;
+      if (value.SecretBinary) return Buffer.from(value.SecretBinary).toString("utf8");
+      throw new Error("NEXUS internal API key secret is empty");
+    }).catch((error) => {
+      internalApiKeyPromise = undefined;
+      throw error;
+    });
+  }
+  return internalApiKeyPromise;
+}
+
+async function authorized(event) {
+  const expected = await internalApiKey();
   const received = event.headers?.["x-internal-key"] || "";
   if (!expected || expected.length !== received.length) return false;
   return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(received));
@@ -340,7 +359,7 @@ export const handler = async (event) => {
     if (isOuAutomationScheduledEvent(event)) return { ou: await runScheduledOuAutomation().catch((error) => ({ error: error?.message || "OU automation failed" })) };
     const method = event.requestContext?.http?.method || event.httpMethod;
     if (method === "OPTIONS") return response(200, { ok: true });
-    if (!authorized(event)) return response(401, { error: "Unauthorized" });
+    if (!(await authorized(event))) return response(401, { error: "Unauthorized" });
     const path = event.rawPath || event.path || "/";
     if (method === "GET" && path === "/health") return response(200, { ok: true, accountId: operationsAccountId });
     const identity = requestIdentity(event);
