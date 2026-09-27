@@ -49,3 +49,20 @@ test("matching events run once and return a task envelope", async () => {
     result: { value: 7 },
   });
 });
+
+test("bridge healthcheck runs without executing the scheduled task", async () => {
+  let calls = 0;
+  const handler = createScheduledHandler({
+    task: "example",
+    matches: () => true,
+    run: async () => { calls += 1; },
+    checkBridge: async () => ({ mode: "bridge", account: "123456789012", role: "ExampleRole" }),
+  });
+
+  assert.deepEqual(await handler({ bridgeHealthcheck: true }), {
+    ok: true,
+    task: "example",
+    bridge: { mode: "bridge", account: "123456789012", role: "ExampleRole" },
+  });
+  assert.equal(calls, 0);
+});

@@ -1,4 +1,4 @@
-export function createScheduledHandler({ task, matches, run, requiredEnvironment = [] }) {
+export function createScheduledHandler({ task, matches, run, checkBridge, requiredEnvironment = [] }) {
   if (!task || typeof matches !== "function" || typeof run !== "function") {
     throw new TypeError("Invalid scheduled handler configuration");
   }
@@ -11,6 +11,11 @@ export function createScheduledHandler({ task, matches, run, requiredEnvironment
         task,
         missingEnvironment,
       };
+    }
+
+    if (event?.bridgeHealthcheck === true) {
+      if (typeof checkBridge !== "function") throw new Error(`Bridge check is not configured for ${task}`);
+      return { ok: true, task, bridge: await checkBridge() };
     }
 
     if (!matches(event)) {

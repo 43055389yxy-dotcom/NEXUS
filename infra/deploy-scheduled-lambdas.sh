@@ -226,6 +226,14 @@ configure_function() {
     "$response" \
     >/dev/null
   jq -e '.ok == true and (.missingEnvironment | length == 0)' "$response" >/dev/null
+  aws lambda invoke \
+    --region "$AWS_REGION" \
+    --function-name "$function_name" \
+    --cli-binary-format raw-in-base64-out \
+    --payload '{"bridgeHealthcheck":true}' \
+    "$response" \
+    >/dev/null
+  jq -e --arg account "$ACCOUNT_ID" '.ok == true and .bridge.mode == "bridge" and .bridge.account == $account and .bridge.role == "TontianConsoleBrokerRole"' "$response" >/dev/null
   echo "Healthy: $function_name"
 }
 
