@@ -1,6 +1,7 @@
 'use client';
 
 import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import { type CloudAccount } from './accounts';
 import { OuAutomationPanel, type OuAutomationHandle } from './ou-automation-panel';
 import { AUTOMATION_ROLE_PROVISION_FRAGMENT, OU_AUTOMATION_PROVISION_FRAGMENT } from './ou-automation-provision';
@@ -434,7 +435,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
       <header className="console-header">
         <a className="console-brand" href="#top"><span>N</span><strong>NEXUS</strong><small>AWS 账号管理</small></a>
         <div className="header-search"><span>⌕</span><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、账号 ID、区域" /><kbd>/</kbd></div>
-        <div className="header-actions"><SupportBillingPanel onNotice={setNotice} /><OuAutomationPanel ref={ouAutomationRef} onNotice={setNotice} /><a className="permission-button" href="/credit-monitor" style={{ textDecoration: 'none' }}>代金券监控</a><a className="permission-button" href="/apn-monitor" style={{ textDecoration: 'none' }}>APN 监控</a>{isAdmin && <button className="permission-button" onClick={() => void openPermissions()}>权限设置</button>}<button className="add-button" onClick={() => setShowAdd(true)}><span>+</span> 添加账号</button></div>
+        <div className="header-actions"><SupportBillingPanel onNotice={setNotice} /><OuAutomationPanel ref={ouAutomationRef} onNotice={setNotice} /><Link className="permission-button" href="/credit-monitor" style={{ textDecoration: 'none' }}>代金券监控</Link><Link className="permission-button" href="/apn-monitor" style={{ textDecoration: 'none' }}>APN 监控</Link>{isAdmin && <button className="permission-button" onClick={() => void openPermissions()}>权限设置</button>}<button className="add-button" onClick={() => setShowAdd(true)}><span>+</span> 添加账号</button></div>
       </header>
 
       <div className="platform-layout" id="top">

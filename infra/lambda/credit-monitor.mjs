@@ -1,7 +1,7 @@
 import { BillingClient, GetCreditsCommand } from "@aws-sdk/client-billing";
 import { BatchWriteItemCommand, DynamoDBClient, PutItemCommand, QueryCommand, ScanCommand } from "@aws-sdk/client-dynamodb";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
-import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
+import { assumeManagedRole } from "./cross-account.mjs";
 
 const REGION = process.env.AWS_REGION || "us-east-1";
 const ACCOUNTS_TABLE = process.env.ACCOUNTS_TABLE || "TontianAwsAccessAccounts";
@@ -15,7 +15,6 @@ const CMA_GROUP_NAMES = new Set(["PMA", "CMA组"]);
 const EXPIRY_THRESHOLDS = [30, 7, 1];
 
 const db = new DynamoDBClient({ region: REGION, maxAttempts: 5 });
-const sts = new STSClient({ region: REGION, maxAttempts: 5 });
 const secrets = new SecretsManagerClient({ region: REGION, maxAttempts: 5 });
 let webhookUrlPromise;
 
@@ -179,17 +178,17 @@ async function batchWrite(requests) {
 }
 
 async function billingClient(accountId) {
-  const result = await sts.send(new AssumeRoleCommand({
-    RoleArn: `arn:aws:iam::${accountId}:role/${BILLING_READ_ROLE}`,
-    RoleSessionName: "nexus-credit-monitor",
-    DurationSeconds: 900,
-  }));
-  const value = result.Credentials;
-  if (!value?.AccessKeyId || !value.SecretAccessKey || !value.SessionToken) throw new Error("无法取得代付账号临时权限");
+  const credentials = await assumeManagedRole({
+    roleArn: `arn:aws:iam::${accountId}:role/${BILLING_READ_ROLE}`,
+    sessionName: "nexus-credit-monitor",
+    durationSeconds: 900,
+    region: REGION,
+    maxAttempts: 5,
+  });
   return new BillingClient({
     region: "us-east-1",
     maxAttempts: 5,
-    credentials: { accessKeyId: value.AccessKeyId, secretAccessKey: value.SecretAccessKey, sessionToken: value.SessionToken },
+    credentials,
   });
 }
 

@@ -1,9 +1,8 @@
 import { DynamoDBClient, GetItemCommand, PutItemCommand, QueryCommand, ScanCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
-import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
+import { assumeManagedRole } from "./cross-account.mjs";
 import { AttachPolicyCommand, CreateOrganizationalUnitCommand, CreatePolicyCommand, DeletePolicyCommand, DescribeOrganizationCommand, DescribePolicyCommand, DetachPolicyCommand, EnablePolicyTypeCommand, ListAccountsCommand, ListOrganizationalUnitsForParentCommand, ListParentsCommand, ListPoliciesCommand, ListPoliciesForTargetCommand, ListRootsCommand, ListTargetsForPolicyCommand, MoveAccountCommand, OrganizationsClient, UpdatePolicyCommand } from "@aws-sdk/client-organizations";
 
 const dynamodb = new DynamoDBClient({});
-const sts = new STSClient({});
 const accountsTable = process.env.ACCOUNTS_TABLE;
 const groupsTable = process.env.GROUPS_TABLE;
 const historyTable = process.env.OU_HISTORY_TABLE || "TontianOuAutomationHistory";
@@ -49,9 +48,12 @@ async function listAccounts() {
 }
 
 async function context(account) {
-  const assumed = await sts.send(new AssumeRoleCommand({ RoleArn: `arn:aws:iam::${account.accountId}:role/${automationRole}`, RoleSessionName: `nexus-ou-${Date.now()}`, DurationSeconds: 900 }));
-  const credentials = assumed.Credentials;
-  const client = new OrganizationsClient({ region: "us-east-1", credentials: { accessKeyId: credentials.AccessKeyId, secretAccessKey: credentials.SecretAccessKey, sessionToken: credentials.SessionToken } });
+  const credentials = await assumeManagedRole({
+    roleArn: `arn:aws:iam::${account.accountId}:role/${automationRole}`,
+    sessionName: `nexus-ou-${Date.now()}`,
+    durationSeconds: 900,
+  });
+  const client = new OrganizationsClient({ region: "us-east-1", credentials });
   const organization = (await client.send(new DescribeOrganizationCommand({}))).Organization;
   const managementAccountId = organization?.ManagementAccountId || organization?.MasterAccountId;
   if (managementAccountId !== account.accountId) fail("该代付账号不是当前 AWS Organization 的管理账号");

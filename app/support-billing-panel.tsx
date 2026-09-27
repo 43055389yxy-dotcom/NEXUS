@@ -170,7 +170,7 @@ export function SupportBillingPanel({ onNotice }: { onNotice: (message: string) 
     const cached = cache.get(accountId, historyMonth);
     setSnapshot(cached?.snapshot ?? null);
     setPreview(Boolean(cached?.preview));
-    if (cached && snapshotIsFresh(cached.snapshot, Date.now(), historyMonth) && !cache.isLoading(accountId, historyMonth)) {
+    if (cached && snapshotIsFresh(cached.snapshot, undefined, historyMonth) && !cache.isLoading(accountId, historyMonth)) {
       setLoadingPayerId('');
       return;
     }

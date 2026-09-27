@@ -3,11 +3,10 @@ import { BillingconductorClient, CreateCustomLineItemCommand, DeleteCustomLineIt
 import { CostExplorerClient, GetCostAndUsageCommand, GetDimensionValuesCommand } from "@aws-sdk/client-cost-explorer";
 import { DynamoDBClient, GetItemCommand, ScanCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
 import { ListAccountsCommand, OrganizationsClient } from "@aws-sdk/client-organizations";
-import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
 import { gzipSync, gunzipSync } from "node:zlib";
+import { assumeManagedRole } from "./cross-account.mjs";
 
 const dynamodb = new DynamoDBClient({ maxAttempts: 6 });
-const sts = new STSClient({ maxAttempts: 5 });
 const accountsTable = process.env.ACCOUNTS_TABLE;
 const groupsTable = process.env.GROUPS_TABLE;
 const automationRole = "TontianOrganizationAutomationRole";
@@ -136,10 +135,12 @@ async function requirePayer(accountId) {
 }
 
 async function clientsFor(payer) {
-  const assumed = await sts.send(new AssumeRoleCommand({ RoleArn: `arn:aws:iam::${payer.accountId}:role/${automationRole}`, RoleSessionName: `nexus-support-${Date.now()}`, DurationSeconds: 900 }));
-  const value = assumed.Credentials;
-  if (!value?.AccessKeyId || !value.SecretAccessKey || !value.SessionToken) fail("无法获取代付账号临时权限");
-  const credentials = { accessKeyId: value.AccessKeyId, secretAccessKey: value.SecretAccessKey, sessionToken: value.SessionToken };
+  const credentials = await assumeManagedRole({
+    roleArn: `arn:aws:iam::${payer.accountId}:role/${automationRole}`,
+    sessionName: `nexus-support-${Date.now()}`,
+    durationSeconds: 900,
+    maxAttempts: 5,
+  });
   return {
     billing: new BillingClient({ region: "us-east-1", credentials, maxAttempts: 5 }),
     conductor: new BillingconductorClient({ region: "us-east-1", credentials, maxAttempts: 5 }),

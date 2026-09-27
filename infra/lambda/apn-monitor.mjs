@@ -1,6 +1,6 @@
 import { BatchWriteItemCommand, DynamoDBClient, PutItemCommand, QueryCommand, ScanCommand } from "@aws-sdk/client-dynamodb";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
-import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
+import { assumeManagedRole } from "./cross-account.mjs";
 import { GetAwsOpportunitySummaryCommand, GetOpportunityCommand, ListOpportunitiesCommand, PartnerCentralSellingClient } from "@aws-sdk/client-partnercentral-selling";
 import { GetBenefitApplicationCommand, ListBenefitAllocationsCommand, ListBenefitApplicationsCommand, PartnerCentralBenefitsClient } from "@aws-sdk/client-partnercentral-benefits";
 
@@ -14,7 +14,6 @@ const WEBHOOK_URL = process.env.WECOM_APN_WEBHOOK_URL || process.env.WECOM_SUPPO
 const WEBHOOK_SECRET_ID = process.env.WECOM_APN_WEBHOOK_SECRET_ID || "";
 const db = new DynamoDBClient({ region: REGION });
 const secrets = new SecretsManagerClient({ region: REGION });
-const sts = new STSClient({ region: REGION });
 let webhookUrlPromise;
 
 const DEFAULT_APN_QUICK_LINKS = [
@@ -91,14 +90,13 @@ async function findApnAccounts() {
 }
 
 async function partnerClients(accountId) {
-  const result = await sts.send(new AssumeRoleCommand({
-    RoleArn: `arn:aws:iam::${accountId}:role/TontianOperationsRole`,
-    RoleSessionName: "nexus-apn-monitor",
-    DurationSeconds: 3600,
-  }));
-  const credentials = result.Credentials;
-  if (!credentials?.AccessKeyId || !credentials.SecretAccessKey || !credentials.SessionToken) throw new Error("无法取得 APN 运维角色凭证");
-  const config = { region: PARTNER_REGION, credentials: { accessKeyId: credentials.AccessKeyId, secretAccessKey: credentials.SecretAccessKey, sessionToken: credentials.SessionToken } };
+  const credentials = await assumeManagedRole({
+    roleArn: `arn:aws:iam::${accountId}:role/TontianOperationsRole`,
+    sessionName: "nexus-apn-monitor",
+    durationSeconds: 3600,
+    region: REGION,
+  });
+  const config = { region: PARTNER_REGION, credentials };
   return { selling: new PartnerCentralSellingClient(config), benefits: new PartnerCentralBenefitsClient(config) };
 }
 
