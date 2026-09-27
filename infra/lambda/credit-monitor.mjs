@@ -311,26 +311,48 @@ export function creditAlertKind(change) {
   return "";
 }
 
+function expiryTiming(days) {
+  if (days === 0) return "今天";
+  if (days === 1) return "明天";
+  if (typeof days === "number" && days > 1) return `${days} 天后`;
+  return "";
+}
+
 function expiryLabel(days, endDate) {
   const date = endDate || "无到期日";
-  if (days === 0) return `今天到期（${date}）`;
-  if (days === 1) return `明天到期（${date}）`;
-  if (typeof days === "number" && days > 1) return `${days} 天后到期（${date}）`;
+  const timing = expiryTiming(days);
+  if (timing) return `${timing}到期（${date}）`;
   return `到期 ${date}`;
 }
 
-function changeText(change, kind) {
+function alertGroup(change, kind) {
   const { credit, changes } = change;
   const endDate = credit.endDate?.slice(0, 10) || "无到期日";
-  if (kind === "new") return [`> **新到券**｜${credit.description}`, `> 到账 ${moneyText(credit.initialAmount)}｜预计余额 ${moneyText(credit.estimatedAmount)}｜到期 ${endDate}`];
-  if (kind === "expired") return [`> **已到期**｜${credit.description}`, `> 到期 ${endDate}｜到期前预计余额 ${moneyText(credit.estimatedAmount)}`];
+  if (kind === "new") return { key: `new:${endDate}`, label: "新到券", text: `${credit.description}｜余额 ${moneyText(credit.estimatedAmount)}｜到期 ${endDate}` };
+  if (kind === "expired") return { key: `expired:${endDate}`, label: `已到期（${endDate}）`, text: `${credit.description}｜到期时余额 ${moneyText(credit.estimatedAmount)}` };
   const expiring = changes.find((item) => item.type === "expiring");
-  return [`> **快到期**｜${credit.description}`, `> ${expiryLabel(expiring?.after, endDate)}｜预计余额 ${moneyText(credit.estimatedAmount)}`];
+  return { key: `expiring:${expiring?.after}:${endDate}`, label: expiryLabel(expiring?.after, endDate), text: `${credit.description}｜余额 ${moneyText(credit.estimatedAmount)}` };
+}
+
+function notificationSummary(alerts, counts) {
+  const activeKinds = Object.entries(counts).filter(([, count]) => count > 0);
+  if (activeKinds.length === 1 && counts.expiring) {
+    const days = new Set(alerts.map((item) => item.change.changes.find((change) => change.type === "expiring")?.after));
+    if (days.size === 1) {
+      const timing = expiryTiming([...days][0]);
+      if (timing === "今天" || timing === "明天") return `${counts.expiring} 张${timing}到期`;
+      if (timing) return `${counts.expiring} 张将在 ${timing}到期`;
+    }
+    return `${counts.expiring} 张即将到期`;
+  }
+  if (activeKinds.length === 1 && counts.new) return `新到 ${counts.new} 张`;
+  if (activeKinds.length === 1 && counts.expired) return `${counts.expired} 张已到期`;
+  return [`新到 ${counts.new} 张`, `即将到期 ${counts.expiring} 张`, `已到期 ${counts.expired} 张`].filter((item) => !item.includes(" 0 张")).join("｜");
 }
 
 export function creditNotificationContent(alerts, checkedAt) {
   const counts = alerts.reduce((result, item) => ({ ...result, [item.kind]: result[item.kind] + 1 }), { new: 0, expiring: 0, expired: 0 });
-  const summary = [`新到券 ${counts.new}`, `快到期 ${counts.expiring}`, `已到期 ${counts.expired}`].filter((item) => !item.endsWith(" 0")).join(" · ");
+  const summary = notificationSummary(alerts, counts);
   const visible = alerts.slice(0, 20);
   const groups = new Map();
   for (const item of visible) {
@@ -341,12 +363,22 @@ export function creditNotificationContent(alerts, checkedAt) {
   }
   const sections = [];
   for (const { account, alerts: accountAlerts } of groups.values()) {
-    const lines = [`> **${account.groupName} · ${account.name}（${account.accountId}）**`];
-    for (const item of accountAlerts) lines.push(...changeText(item.change, item.kind));
+    const lines = [`> **${account.name}（${account.accountId}）｜${account.groupName}**`];
+    const alertGroups = new Map();
+    for (const item of accountAlerts) {
+      const detail = alertGroup(item.change, item.kind);
+      if (!alertGroups.has(detail.key)) alertGroups.set(detail.key, { label: detail.label, items: [] });
+      alertGroups.get(detail.key).items.push(detail.text);
+    }
+    for (const alertGroupItem of alertGroups.values()) {
+      lines.push(`> ${alertGroupItem.label}`);
+      for (const item of alertGroupItem.items) lines.push(`> - ${item}`);
+    }
     sections.push(lines.join("\n"));
   }
   if (alerts.length > visible.length) sections.push(`> 另有 ${alerts.length - visible.length} 项提醒，请在 NEXUS 查看`);
-  return [`**【代金券提醒】${summary}**`, ...sections, `检查时间：${checkedAt}`].join("\n\n");
+  const checkedAtWithoutSeconds = String(checkedAt).replace(/:\d{2}$/, "");
+  return [`**【代金券提醒】${summary}**`, ...sections, `检查：${checkedAtWithoutSeconds}`].join("\n\n");
 }
 
 async function notify(changes) {
