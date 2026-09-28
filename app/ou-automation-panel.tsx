@@ -4,7 +4,7 @@ import { forwardRef, useEffect, useImperativeHandle, useState } from 'react';
 import { MfaRecoveryPanel } from './mfa-recovery-panel';
 import styles from './ou-automation.module.css';
 
-type AutomationAccount = { accountId: string; remark: string; groupName: string; lastRunAt?: string; lastStatus?: string };
+type AutomationAccount = { accountId: string; remark: string; groupName: string; lastRunAt?: string; lastStatus?: string; lastMessage?: string };
 type Discovery = { account: AutomationAccount; policyName: string; policyId?: string };
 type RestrictionStatus = 'restricted' | 'missing' | 'exempt';
 type MemberAccount = { accountId: string; name: string; email: string; restrictionStatus: RestrictionStatus; restricted: boolean; exempt: boolean };
@@ -194,7 +194,7 @@ export const OuAutomationPanel = forwardRef<OuAutomationHandle, { onNotice: (mes
           <aside className={styles.accountActions}><button disabled={busy || previewMode} onClick={() => void openHistory()}>操作记录</button></aside>
         </div>
         <div className={styles.layout}>
-          <aside className={styles.accounts}>{accounts.length === 0 ? <p>暂无代付账号</p> : visibleAccounts.length === 0 ? <p>没有匹配账号</p> : visibleAccounts.map((account) => <button key={account.accountId} className={selectedAccountId === account.accountId ? styles.active : ''} onClick={() => { setBusy(true); setMemberQuery(''); void inspect(account.accountId).catch((error) => onNotice(error.message)).finally(() => setBusy(false)); }}><span>{account.remark.slice(0, 1).toUpperCase()}</span><div><strong>{account.remark}</strong><small>{account.accountId} · {account.groupName}</small></div>{account.lastStatus === 'failed' && <i data-status="failed">异常</i>}</button>)}</aside>
+          <aside className={styles.accounts}>{accounts.length === 0 ? <p>暂无代付账号</p> : visibleAccounts.length === 0 ? <p>没有匹配账号</p> : visibleAccounts.map((account) => <button key={account.accountId} className={selectedAccountId === account.accountId ? styles.active : ''} onClick={() => { setBusy(true); setMemberQuery(''); void inspect(account.accountId).catch((error) => onNotice(error.message)).finally(() => setBusy(false)); }}><span>{account.remark.slice(0, 1).toUpperCase()}</span><div><strong>{account.remark}</strong><small>{account.accountId} · {account.groupName}</small></div>{account.lastStatus === 'failed' && <i data-status={allFeaturesDisabled(account) ? 'features-disabled' : 'failed'} title={account.lastMessage || undefined}>{automationStatusLabel(account)}</i>}</button>)}</aside>
           <section className={styles.config}>{busy && !discovery ? <div className={styles.empty}>正在读取...</div> : !discovery ? <div className={styles.empty}>选择一个代付账号</div> : <>
             <div className={styles.accountHead}><div><strong>{discovery.account.remark}</strong><small>{discovery.account.accountId}{cachedAt ? ` · 更新 ${formatHistoryTime(cachedAt)}` : ''}</small></div><aside className={styles.accountActions}><button disabled={busy || previewMode} onClick={() => void syncAccount(discovery.account.accountId)}>{busy ? '同步中...' : '同步全部客户'}</button></aside></div>
             <div className={styles.guardrailStats}><div><span>客户</span><strong>{members.length}</strong></div><div data-status="restricted"><span>已限制</span><strong>{counts.restricted}</strong></div><div data-status="missing"><span>待添加</span><strong>{counts.missing}</strong></div><div data-status="exempt"><span>已取消</span><strong>{counts.exempt}</strong></div></div>
@@ -216,6 +216,15 @@ function restrictionLabel(value: 'all' | RestrictionStatus) {
   if (value === 'restricted') return '已限制';
   if (value === 'missing') return '待添加';
   return '已取消';
+}
+
+function automationStatusLabel(account: AutomationAccount) {
+  if (allFeaturesDisabled(account)) return '未开启所有功能';
+  return '同步失败';
+}
+
+function allFeaturesDisabled(account: AutomationAccount) {
+  return Boolean(account.lastMessage?.includes('未开启“所有功能”'));
 }
 
 function formatHistoryDate(value: string) {
