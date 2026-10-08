@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { executedSupportBillingResults, scheduledSupportPeriods, supportBillingRange, supportBillingScheduleDecision, supportScanSummaryContent } from "../lambda/support-billing.mjs";
+import { dailySupportSyncNotificationContent, executedSupportBillingResults, scheduledSupportPeriods, supportBillingRange, supportBillingScheduleDecision, supportScanSummaryContent } from "../lambda/support-billing.mjs";
 
 function payer(overrides = {}) {
   return { snapshot: { accounts: [] }, lastScanAt: "", lastStatus: "", lastAutoSyncAt: "", ...overrides };
@@ -66,6 +66,39 @@ test("does not confuse skipped member counts with a skipped payer run", () => {
   assert.deepEqual(executedSupportBillingResults(results), [results[1]]);
 });
 
+test("scheduled notification shows changes and summarizes unavailable billing views", () => {
+  const content = dailySupportSyncNotificationContent([{
+    payerName: "PMA1",
+    failed: 0,
+    repaired: 0,
+    synced: 1,
+    changes: [{ periodKey: "previous", accountName: "zm", previousAmount: "$33.25", nextAmount: "$34.93" }],
+    warnings: ["PMA1：6 个账单视图暂未返回数据"],
+    scan: { refreshed: false },
+  }], new Date("2026-10-08T16:15:00+08:00"));
+  assert.equal(content, [
+    "**Support+ 费用更新｜10/08 16:15**",
+    "上月 · PMA1 · zm：$33.25 → $34.93",
+    "PMA1：6 个账单视图暂未返回数据",
+  ].join("\n"));
+});
+
+test("unavailable billing data is not labeled as a reconciliation failure", () => {
+  const content = dailySupportSyncNotificationContent([{
+    payerName: "PMA1",
+    failed: 0,
+    repaired: 0,
+    synced: 0,
+    changes: [],
+    warnings: ["PMA1：6 个账单视图暂未返回数据"],
+    scan: { refreshed: false },
+  }], new Date("2026-10-08T16:13:00+08:00"));
+  assert.equal(content, [
+    "**Support+ 数据待更新｜10/08 16:13**",
+    "PMA1：6 个账单视图暂未返回数据",
+  ].join("\n"));
+});
+
 test("manual scan summary stays concise and reports actionable totals", () => {
   const content = supportScanSummaryContent([
     { remark: "PMA1", lastStatus: "partial", snapshot: { accounts: [{ name: "zm", current: { status: "update", synced: 29, aws: 33.25 } }], diagnostics: { viewWarnings: Array.from({ length: 6 }, (_, index) => ({ sourceAccountId: String(index) })) } } },
@@ -74,6 +107,6 @@ test("manual scan summary stays concise and reports actionable totals", () => {
   assert.equal(content, [
     "**Support+ 扫描完成｜10/08 09:30**",
     "PMA1 · zm：USD 29.00 → USD 33.25",
-    "PMA1：6 个账单视图数据待更新",
+    "PMA1：6 个账单视图暂未返回数据",
   ].join("\n"));
 });

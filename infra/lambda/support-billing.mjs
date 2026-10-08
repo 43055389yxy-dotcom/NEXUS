@@ -784,41 +784,26 @@ function supportSyncChanges(snapshot, periodKey, targets, beforeSync) {
 }
 
 function supportDataWarnings(payer, snapshot) {
-  const warnings = snapshot.diagnostics?.viewWarnings || [];
-  return [...new Map(warnings.map((warning) => {
-    const source = warning.viewName || warning.sourceAccountId || "账单视图";
-    const key = `${warning.period || "current"}:${warning.sourceAccountId || source}`;
-    return [key, `${notificationText(payer.remark)}：${notificationText(source)} · ${notificationText(warning.error || "数据未更新")}`];
-  })).values()];
+  const sources = new Set((snapshot.diagnostics?.viewWarnings || []).map((warning) => warning.sourceAccountId || warning.viewName).filter(Boolean));
+  return sources.size ? [`${notificationText(payer.remark)}：${sources.size} 个账单视图暂未返回数据`] : [];
 }
 
-function supportSyncNotificationContents(payer, snapshot, periodKey, targets, automatic, summary, beforeSync) {
+export function supportSyncNotificationContents(payer, snapshot, periodKey, targets, automatic, summary, beforeSync, now = new Date()) {
   const changes = supportSyncChanges(snapshot, periodKey, targets, beforeSync);
   const periodLabel = periodKey === "previous" ? "上月 · " : "";
-  const details = changes.map((change) => `${periodLabel}${notificationText(payer.remark)} · ${notificationText(change.accountName)}：${change.previousAmount} → ${change.nextAmount}`);
+  const details = changes.slice(0, 10).map((change) => `${periodLabel}${notificationText(payer.remark)} · ${notificationText(change.accountName)}：${change.previousAmount} → ${change.nextAmount}`);
+  if (changes.length > details.length) details.push(`另有 ${changes.length - details.length} 项费用更新，请在网页查看`);
   const warnings = supportDataWarnings(payer, snapshot);
-  const scanComplete = snapshot?.diagnostics?.accountDiscoveryRefreshed === true;
   const summaryLine = [summary.failed ? `失败 ${summary.failed}` : "", summary.repaired ? `修正 ${summary.repaired}` : ""].filter(Boolean).join("｜");
-  const time = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date());
-  const title = summary.failed || warnings.length ? "Support+ 对账异常" : changes.length ? "Support+ 费用更新" : "Support+ 对账完成";
-  const header = [
+  const time = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(now);
+  const title = summary.failed ? "Support+ 对账失败" : changes.length ? "Support+ 费用更新" : warnings.length ? "Support+ 数据待更新" : "Support+ 对账完成";
+  return [[
     `**${title}｜${time}**`,
     ...(summaryLine ? [summaryLine] : []),
-    ...(changes.length || warnings.length ? [] : [scanComplete ? "无费用变化" : "扫描不完整"]),
-  ];
-  details.push(...warnings);
-  const pages = []; let page = [];
-  for (const detail of details) {
-    if (page.length && (page.length >= 8 || Buffer.byteLength([...header, ...page, detail].join("\n"), "utf8") > 3500)) {
-      pages.push(page); page = [];
-    }
-    page.push(detail);
-  }
-  if (page.length || !pages.length) pages.push(page);
-  return pages.map((lines, index) => [
-    `${header[0]}${pages.length > 1 ? `（${index + 1}/${pages.length}）` : ""}`,
-    ...header.slice(1), ...lines,
-  ].join("\n"));
+    ...(!changes.length && !warnings.length ? ["无费用变化"] : []),
+    ...details,
+    ...warnings,
+  ].join("\n")];
 }
 
 async function sendSupportSyncNotification(payer, snapshot, periodKey, targets, automatic, summary, beforeSync) {
@@ -829,7 +814,7 @@ async function sendSupportSyncNotification(payer, snapshot, periodKey, targets, 
   }
 }
 
-async function sendDailySupportSyncNotification(results) {
+export function dailySupportSyncNotificationContent(results, now = new Date()) {
   const payerFailures = results.filter((item) => item.error);
   const totals = results.reduce((sum, item) => ({
     pending: sum.pending + Number(item.pending || 0),
@@ -839,26 +824,28 @@ async function sendDailySupportSyncNotification(results) {
   }), { pending: 0, synced: 0, repaired: 0, failed: 0 });
   const changes = results.flatMap((item) => (item.changes || []).map((change) => ({ ...change, payerName: item.payerName })));
   const warningLines = results.flatMap((item) => item.warnings || []);
-  const time = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date());
-  const failureLines = payerFailures.map((item) => `${notificationText(item.payerName || item.accountId)}：${notificationText(item.error)}`);
-  const issueLines = [...failureLines, ...warningLines];
-  const totalFailures = totals.failed + issueLines.length;
+  const time = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(now);
+  const failureLines = payerFailures.map((item) => `${notificationText(item.payerName || item.accountId)}：执行失败，请在网页查看`);
+  const totalFailures = totals.failed + failureLines.length;
   const hasChanges = totals.synced > 0;
   const fullyRefreshed = results.length > 0 && results.every((item) => !item.error && item.scan?.refreshed === true);
   const addedAccounts = results.reduce((sum, item) => sum + Number(item.scan?.addedAccounts || 0), 0);
-  const title = issueLines.length || totals.failed ? "Support+ 对账异常" : hasChanges ? "Support+ 费用更新" : "Support+ 对账完成";
+  const title = totalFailures ? "Support+ 对账失败" : hasChanges ? "Support+ 费用更新" : warningLines.length ? "Support+ 数据待更新" : "Support+ 对账完成";
   const summary = [totalFailures ? `失败 ${totalFailures}` : "", totals.repaired ? `修正 ${totals.repaired}` : ""].filter(Boolean).join("｜");
-  const changeLines = changes.slice(0, 12).map((change) => `${change.periodKey === "previous" ? "上月 · " : ""}${notificationText(change.payerName)} · ${notificationText(change.accountName)}：${change.previousAmount} → ${change.nextAmount}`);
+  const changeLines = changes.slice(0, 10).map((change) => `${change.periodKey === "previous" ? "上月 · " : ""}${notificationText(change.payerName)} · ${notificationText(change.accountName)}：${change.previousAmount} → ${change.nextAmount}`);
   if (changes.length > changeLines.length) changeLines.push(`另有 ${changes.length - changeLines.length} 项费用更新，请在网页查看`);
-  const visibleIssues = issueLines.slice(0, 8);
-  if (issueLines.length > visibleIssues.length) visibleIssues.push(`另有 ${issueLines.length - visibleIssues.length} 项数据异常，请在网页查看`);
-  const content = [
+  return [
     `**${title}｜${time}**`,
     ...(summary ? [summary] : []),
-    ...(!hasChanges && !issueLines.length && !totals.failed ? [fullyRefreshed ? (addedAccounts ? `新增账号 ${addedAccounts} 个` : "无费用变化") : "扫描不完整"] : []),
+    ...(!hasChanges && !warningLines.length && !totalFailures ? [fullyRefreshed ? (addedAccounts ? `新增账号 ${addedAccounts} 个` : "无费用变化") : "数据暂未齐全"] : []),
     ...changeLines,
-    ...visibleIssues,
+    ...failureLines,
+    ...warningLines,
   ].join("\n");
+}
+
+async function sendDailySupportSyncNotification(results) {
+  const content = dailySupportSyncNotificationContent(results);
   await sendSupportWebhook(content);
 }
 
@@ -872,7 +859,7 @@ export function supportScanSummaryContent(payers, now = new Date()) {
   }));
   const warnings = payers.flatMap((payer) => {
     const sources = new Set((payer.snapshot?.diagnostics?.viewWarnings || []).map((warning) => warning.sourceAccountId || warning.viewName).filter(Boolean));
-    return sources.size ? [`${notificationText(payer.remark)}：${sources.size} 个账单视图数据待更新`] : [];
+    return sources.size ? [`${notificationText(payer.remark)}：${sources.size} 个账单视图暂未返回数据`] : [];
   });
   const failures = payers.filter((payer) => payer.lastStatus === "failed").map((payer) => `${notificationText(payer.remark)}：${notificationText(payer.lastMessage || "扫描失败")}`);
   const details = [...changes, ...warnings, ...failures];
