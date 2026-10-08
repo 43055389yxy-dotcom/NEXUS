@@ -12,7 +12,7 @@ const targetGroupNames = new Set([...(process.env.OU_AUTOMATION_GROUP_NAMES || "
 const temporaryName = "临时";
 const restrictedName = "禁止 SP/RI";
 const restrictedPolicyName = "NEXUS-Restricted-Guardrails";
-const obsoletePolicyName = "DenyLeaveAndCloseAccount";
+const obsoletePolicyNames = new Set(["SP/RI-Deny", "Organizations", "DenyLeaveAndCloseAccount"]);
 const guardrailCacheVersion = "direct-account-v1";
 const policyDocuments = {
   [restrictedPolicyName]: { Version: "2012-10-17", Statement: [{ Effect: "Deny", Action: ["savingsplans:CreateSavingsPlan", "ec2:PurchaseReservedInstancesOffering", "rds:PurchaseReservedDBInstancesOffering", "organizations:LeaveOrganization", "account:CloseAccount"], Resource: "*" }] },
@@ -176,14 +176,24 @@ async function policyTargets(client, policyId) {
 }
 
 async function detachFromEverywhereExcept(client, policyId, keepTargetId = "") {
-  for (const target of await policyTargets(client, policyId)) if (target.TargetId && target.TargetId !== keepTargetId) await client.send(new DetachPolicyCommand({ PolicyId: policyId, TargetId: target.TargetId }));
+  let detached = 0;
+  for (const target of await policyTargets(client, policyId)) {
+    if (!target.TargetId || target.TargetId === keepTargetId) continue;
+    await client.send(new DetachPolicyCommand({ PolicyId: policyId, TargetId: target.TargetId }));
+    detached += 1;
+  }
+  return detached;
 }
 
 async function removeObsoletePolicies(client, policies) {
-  for (const policy of policies.filter((item) => item.Name === obsoletePolicyName && !item.AwsManaged && item.Id)) {
-    await detachFromEverywhereExcept(client, policy.Id);
+  let deleted = 0;
+  let detached = 0;
+  for (const policy of policies.filter((item) => obsoletePolicyNames.has(item.Name) && !item.AwsManaged && item.Id && String(item.Description || "").startsWith("Managed by NEXUS:"))) {
+    detached += await detachFromEverywhereExcept(client, policy.Id);
     await client.send(new DeletePolicyCommand({ PolicyId: policy.Id }));
+    deleted += 1;
   }
+  return { deleted, detached };
 }
 
 async function configureFromInspection(value, mapping = {}) {
@@ -362,22 +372,26 @@ async function syncDirectGuardrails(account) {
     changedAccounts.push({ accountId: member.Id, name: member.Name || member.Id, email: member.Email || "", sourceParentName: "未限制", destinationParentName: "已限制" });
   }
 
+  let ouDetached = 0;
   for (const target of targets) {
     if (!target.TargetId || target.Type === "ACCOUNT") continue;
     await organization.client.send(new DetachPolicyCommand({ PolicyId: policyId, TargetId: target.TargetId }));
+    ouDetached += 1;
   }
-  await removeObsoletePolicies(organization.client, policies);
+  const legacyCleanup = await removeObsoletePolicies(organization.client, policies);
+  ouDetached += legacyCleanup.detached;
 
   const directory = members.map((member) => publicGuardrailMember(member, directTargetIds, account.restrictionExemptions));
   await saveMemberCache(account, directory);
-  return { accountId: account.accountId, checked: members.length, added, removed, already, exempt, moved: added + removed, skipped: already + exempt, members: directory, changedAccounts, policyId };
+  return { accountId: account.accountId, checked: members.length, added, removed, already, exempt, moved: added + removed, skipped: already + exempt, members: directory, changedAccounts, policyId, ouDetached, legacyPoliciesDeleted: legacyCleanup.deleted };
 }
 
 async function reconcile(accountId, { mode = "automatic" } = {}) {
   const account = await requireAccount(accountId);
   try {
     const result = await syncDirectGuardrails(account);
-    const message = `检查 ${result.checked} 个客户，新增限制 ${result.added} 个，已限制 ${result.already} 个，已取消 ${result.exempt} 个`;
+    const cleanupText = result.ouDetached || result.legacyPoliciesDeleted ? `，解除旧 OU 限制 ${result.ouDetached} 个，删除旧策略 ${result.legacyPoliciesDeleted} 个` : "";
+    const message = `检查 ${result.checked} 个客户，新增限制 ${result.added} 个，已限制 ${result.already} 个，已取消 ${result.exempt} 个${cleanupText}`;
     await recordRun(accountId, "success", message);
     await recordOperation({ account, mode, status: "success", checked: result.checked, moved: result.moved, skipped: result.skipped, message, movedAccounts: result.changedAccounts });
     return { ...result, message };
