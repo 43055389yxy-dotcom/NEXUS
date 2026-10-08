@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { supportBillingScheduleDecision, supportScanSummaryContent } from "../lambda/support-billing.mjs";
+import { scheduledSupportPeriods, supportBillingRange, supportBillingScheduleDecision, supportScanSummaryContent } from "../lambda/support-billing.mjs";
 
 function payer(overrides = {}) {
   return { snapshot: { accounts: [] }, lastScanAt: "", lastStatus: "", lastAutoSyncAt: "", ...overrides };
@@ -37,9 +37,25 @@ test("skips any duplicate after a successful scan on the same Beijing date", () 
 });
 
 test("runs when no automatic scan has been recorded", () => {
-  const decision = supportBillingScheduleDecision(payer(), new Date("2026-09-10T02:15:00+08:00"));
+  const decision = supportBillingScheduleDecision(payer(), new Date("2026-09-11T02:15:00+08:00"));
   assert.equal(decision.due, true);
   assert.equal(decision.reason, "first-automatic-scan");
+});
+
+test("uses a closed one-month range when updating the previous billing period", () => {
+  assert.deepEqual(supportBillingRange("2026-09"), {
+    InclusiveStartBillingPeriod: "2026-09",
+    ExclusiveEndBillingPeriod: "2026-10",
+  });
+});
+
+test("runs daily and syncs both periods during the first ten days", () => {
+  const now = new Date("2026-10-08T02:15:00+08:00");
+  const decision = supportBillingScheduleDecision(payer({ lastAutoSyncAt: "2026-10-07T02:15:00+08:00" }), now);
+  assert.equal(decision.due, true);
+  assert.equal(decision.reason, "previous-month-closeout");
+  assert.deepEqual(scheduledSupportPeriods(now), ["previous", "current"]);
+  assert.deepEqual(scheduledSupportPeriods(new Date("2026-10-11T02:15:00+08:00")), ["current"]);
 });
 
 test("manual scan summary stays concise and reports actionable totals", () => {

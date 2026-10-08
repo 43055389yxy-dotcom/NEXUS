@@ -161,7 +161,7 @@ function chinaDateParts(date = new Date()) {
 function dateString(date) { return date.toISOString().slice(0, 10); }
 function monthString(date) { return date.toISOString().slice(0, 7); }
 function monthAfter(period) { const [year, month] = period.split("-").map(Number); return monthString(new Date(Date.UTC(year, month, 1))); }
-function billingRange(period) { return { InclusiveStartBillingPeriod: period, ExclusiveEndBillingPeriod: monthAfter(period) }; }
+export function supportBillingRange(period) { return { InclusiveStartBillingPeriod: period, ExclusiveEndBillingPeriod: monthAfter(period) }; }
 function periodDefinitions(selected = ["current", "previous"]) {
   const now = chinaDateParts();
   const today = new Date(Date.UTC(now.year, now.month - 1, now.day));
@@ -622,7 +622,7 @@ async function writeSync(payer, clients, snapshot, periodKey, targets, automatic
     const action = item.status;
     try {
       if (item.status === "create") {
-        const response = await clients.conductor.send(new CreateCustomLineItemCommand({ ClientToken: `nexus-support-${payer.accountId}-${account.id}-${period.replace("-", "")}`, Name: name, Description: description, BillingGroupArn: item.billingGroupArn, BillingPeriodRange: billingRange(period), ChargeDetails: { Flat: { ChargeValue: amount }, Type: "FEE" }, AccountId: account.id, ComputationRule: "CONSOLIDATED" }));
+        const response = await clients.conductor.send(new CreateCustomLineItemCommand({ ClientToken: `nexus-support-${payer.accountId}-${account.id}-${period.replace("-", "")}`, Name: name, Description: description, BillingGroupArn: item.billingGroupArn, BillingPeriodRange: supportBillingRange(period), ChargeDetails: { Flat: { ChargeValue: amount }, Type: "FEE" }, AccountId: account.id, ComputationRule: "CONSOLIDATED" }));
         item.customLineItemArn = response.Arn; summary.created += 1;
       } else {
         try {
@@ -631,7 +631,7 @@ async function writeSync(payer, clients, snapshot, periodKey, targets, automatic
             Name: name,
             Description: description,
             ChargeDetails: { Flat: { ChargeValue: amount } },
-            ...(periodKey === "previous" ? { BillingPeriodRange: { InclusiveStartBillingPeriod: period } } : {}),
+            ...(periodKey === "previous" ? { BillingPeriodRange: supportBillingRange(period) } : {}),
           }));
         } catch (error) {
           if (!/invalid custom line item billing period range/i.test(String(error?.message || error))) throw error;
@@ -641,7 +641,7 @@ async function writeSync(payer, clients, snapshot, periodKey, targets, automatic
           if (!valid) throw new Error("账单项安全校验未通过，未执行重建");
           await clients.conductor.send(new DeleteCustomLineItemCommand({
             Arn: staleArn,
-            ...(periodKey === "previous" ? { BillingPeriodRange: { InclusiveStartBillingPeriod: period } } : {}),
+            ...(periodKey === "previous" ? { BillingPeriodRange: supportBillingRange(period) } : {}),
           }));
           const unresolved = await waitForRemovedCarryovers(clients.conductor, [{ arn: staleArn, activePeriod: period }]);
           if (unresolved.has(staleArn)) throw new Error("AWS 已接收删除，但异常账单项暂未移除");
@@ -650,7 +650,7 @@ async function writeSync(payer, clients, snapshot, periodKey, targets, automatic
             Name: name,
             Description: description,
             BillingGroupArn: item.billingGroupArn,
-            BillingPeriodRange: billingRange(period),
+            BillingPeriodRange: supportBillingRange(period),
             ChargeDetails: { Flat: { ChargeValue: amount }, Type: "FEE" },
             AccountId: account.id,
             ComputationRule: "CONSOLIDATED",
@@ -702,8 +702,13 @@ export function supportBillingScheduleDecision(payer, now = new Date()) {
   const lastAutomatic = new Date(payer.lastAutoSyncAt || "");
   const elapsedDays = Number.isNaN(lastAutomatic.getTime()) ? null : beijingDayNumber(now) - beijingDayNumber(lastAutomatic);
   if (monthEndDaily) return { due: true, reason: "month-end-daily", monthEndDaily, elapsedDays };
+  if (current.day <= 10) return { due: true, reason: "previous-month-closeout", monthEndDaily, elapsedDays };
   if (elapsedDays === null) return { due: true, reason: "first-automatic-scan", monthEndDaily, elapsedDays };
   return { due: elapsedDays >= 3, reason: elapsedDays >= 3 ? "three-day-cadence" : "waiting-three-day-cadence", monthEndDaily, elapsedDays };
+}
+
+export function scheduledSupportPeriods(now = new Date()) {
+  return chinaDateParts(now).day <= 10 ? ["previous", "current"] : ["current"];
 }
 
 function notificationText(value) {
@@ -785,7 +790,8 @@ function supportDataWarnings(payer, snapshot) {
 
 function supportSyncNotificationContents(payer, snapshot, periodKey, targets, automatic, summary, beforeSync) {
   const changes = supportSyncChanges(snapshot, periodKey, targets, beforeSync);
-  const details = changes.map((change) => `${notificationText(payer.remark)} · ${notificationText(change.accountName)}：${change.previousAmount} → ${change.nextAmount}`);
+  const periodLabel = periodKey === "previous" ? "上月 · " : "";
+  const details = changes.map((change) => `${periodLabel}${notificationText(payer.remark)} · ${notificationText(change.accountName)}：${change.previousAmount} → ${change.nextAmount}`);
   const warnings = supportDataWarnings(payer, snapshot);
   const scanComplete = snapshot?.diagnostics?.accountDiscoveryRefreshed === true;
   const summaryLine = [summary.failed ? `失败 ${summary.failed}` : "", summary.repaired ? `修正 ${summary.repaired}` : ""].filter(Boolean).join("｜");
@@ -838,7 +844,7 @@ async function sendDailySupportSyncNotification(results) {
   const addedAccounts = results.reduce((sum, item) => sum + Number(item.scan?.addedAccounts || 0), 0);
   const title = issueLines.length || totals.failed ? "Support+ 对账异常" : hasChanges ? "Support+ 费用更新" : "Support+ 对账完成";
   const summary = [totalFailures ? `失败 ${totalFailures}` : "", totals.repaired ? `修正 ${totals.repaired}` : ""].filter(Boolean).join("｜");
-  const changeLines = changes.slice(0, 12).map((change) => `${notificationText(change.payerName)} · ${notificationText(change.accountName)}：${change.previousAmount} → ${change.nextAmount}`);
+  const changeLines = changes.slice(0, 12).map((change) => `${change.periodKey === "previous" ? "上月 · " : ""}${notificationText(change.payerName)} · ${notificationText(change.accountName)}：${change.previousAmount} → ${change.nextAmount}`);
   if (changes.length > changeLines.length) changeLines.push(`另有 ${changes.length - changeLines.length} 项费用更新，请在网页查看`);
   const visibleIssues = issueLines.slice(0, 8);
   if (issueLines.length > visibleIssues.length) visibleIssues.push(`另有 ${issueLines.length - visibleIssues.length} 项数据异常，请在网页查看`);
@@ -905,6 +911,34 @@ async function syncAction(payer, periodKey, targets, automatic = false, persist 
   return { ...result, changes, warnings, scan };
 }
 
+async function syncScheduledPeriodsAction(payer, periodKeys) {
+  const clients = await clientsFor(payer);
+  const previousSnapshot = payer.snapshot;
+  let snapshot = await scanWithClients(payer, clients, periodKeys);
+  const writeTargets = new Set(snapshot.accounts.filter((account) => accountAutoSyncEnabled(payer, account.id)).map((account) => account.id));
+  const summary = { created: 0, updated: 0, repaired: 0, deleted: 0, failed: 0, skipped: 0, syncedAmount: 0, pending: 0, synced: 0 };
+  const changes = [];
+  const noPersist = async (_payer, value) => value;
+
+  for (const periodKey of periodKeys) {
+    const beforeSync = new Map(snapshot.accounts.filter((account) => writeTargets.has(account.id)).map((account) => [account.id, { synced: account[periodKey].synced, status: account[periodKey].status }]));
+    const repair = await repairRanges(clients, snapshot, periodKey, writeTargets);
+    if (repair.repaired) snapshot = await scanWithClients(payer, clients, periodKeys, snapshot);
+    const result = await writeSync(payer, clients, snapshot, periodKey, writeTargets, true, repair.repaired, repair.failed, noPersist);
+    snapshot = result.snapshot;
+    const periodChanges = supportSyncChanges(snapshot, periodKey, writeTargets, beforeSync).map((change) => ({ ...change, periodKey }));
+    for (const key of ["created", "updated", "repaired", "deleted", "failed", "skipped", "syncedAmount"]) summary[key] = cents(summary[key] + Number(result.summary[key] || 0));
+    summary.pending += pendingSupportCount(snapshot, periodKey);
+    summary.synced += periodChanges.length;
+    changes.push(...periodChanges);
+  }
+
+  const warnings = supportDataWarnings(payer, snapshot);
+  const message = `创建 ${summary.created}，更新 ${summary.updated}，修正 ${summary.repaired}，失败 ${summary.failed}${warnings.length ? `，${warnings.length} 个账单视图数据待更新` : ""}`;
+  await saveSnapshot(payer, snapshot, summary.failed || warnings.length ? "partial" : "success", message, true);
+  return { summary, snapshot, changes, warnings, scan: supportScanDiagnostics(snapshot, previousSnapshot) };
+}
+
 async function deleteAction(payer, periodKey, targets, persist = saveSnapshot) {
   const clients = await clientsFor(payer);
   const snapshot = await scanWithClients(payer, clients);
@@ -955,7 +989,7 @@ export async function runScheduledSupportBilling({ now = new Date() } = {}) {
       continue;
     }
     try {
-      const value = await syncAction(payer, "current", null, true, saveSnapshot, false);
+      const value = await syncScheduledPeriodsAction(payer, scheduledSupportPeriods(now));
       results.push({ accountId: payer.accountId, payerName: payer.remark, ...value.summary, changes: value.changes, warnings: value.warnings, scan: value.scan, schedule });
     }
     catch (error) { await markFailure(payer, error?.message || "自动对账失败"); results.push({ accountId: payer.accountId, payerName: payer.remark, error: error?.message || "自动对账失败", schedule }); }
