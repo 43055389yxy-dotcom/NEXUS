@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { supportBillingScheduleDecision } from "../lambda/support-billing.mjs";
+import { supportBillingScheduleDecision, supportScanSummaryContent } from "../lambda/support-billing.mjs";
 
 function payer(overrides = {}) {
   return { snapshot: { accounts: [] }, lastScanAt: "", lastStatus: "", lastAutoSyncAt: "", ...overrides };
@@ -40,4 +40,17 @@ test("runs when no automatic scan has been recorded", () => {
   const decision = supportBillingScheduleDecision(payer(), new Date("2026-09-10T02:15:00+08:00"));
   assert.equal(decision.due, true);
   assert.equal(decision.reason, "first-automatic-scan");
+});
+
+test("manual scan summary stays concise and reports actionable totals", () => {
+  const content = supportScanSummaryContent([
+    { remark: "PMA1", accountCount: 10, pendingCount: 1, blockedCount: 0, lastStatus: "success", lastMessage: "" },
+    { remark: "北跳", accountCount: 6, pendingCount: 0, blockedCount: 2, lastStatus: "partial", lastMessage: "2 个账单视图数据待更新" },
+  ], new Date("2026-10-08T09:30:00+08:00"));
+  assert.equal(content, [
+    "**Support+ 扫描完成｜10/08 09:30**",
+    "代付 2｜成员 16",
+    "待处理 1｜需检查 1",
+    "北跳：2 个账单视图数据待更新",
+  ].join("\n"));
 });

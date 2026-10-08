@@ -250,6 +250,11 @@ export function SupportBillingPanel({ onNotice }: { onNotice: (message: string) 
         if (!openRef.current || version !== selectionVersion.current) return;
         setAllSnapshots(next);
         if (failures) setLoadError(`${failures} 个代付账号扫描失败，其他结果已更新。`);
+        try { await request({ action: 'notify_scan_summary', accountIds: payers.map((item) => item.accountId) }); }
+        catch (error) {
+          const message = error instanceof Error ? error.message : '群通知发送失败';
+          setLoadError(`扫描已完成，但${message}`);
+        }
         onNotice(`全部扫描完成：成员账号 ${accounts}，今日已跳过 ${skipped} 个代付，失败 ${failures} 个`);
         return;
       }
@@ -257,6 +262,11 @@ export function SupportBillingPanel({ onNotice }: { onNotice: (message: string) 
       if (!openRef.current || version !== selectionVersion.current) return;
       setSnapshot(value.snapshot);
       setSelected([]);
+      try { await request({ action: 'notify_scan_summary', accountIds: [accountId] }); }
+      catch (error) {
+        const message = error instanceof Error ? error.message : '群通知发送失败';
+        setLoadError(`扫描已完成，但${message}`);
+      }
       onNotice(value.skipped ? '今日已同步，已跳过重复扫描' : `扫描完成，共 ${value.snapshot.accounts.length} 个成员账号`);
     } catch (error) {
       if (!openRef.current || version !== selectionVersion.current) return;

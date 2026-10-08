@@ -3,6 +3,7 @@ import { BillingconductorClient, CreateCustomLineItemCommand, DeleteCustomLineIt
 import { CostExplorerClient, GetCostAndUsageCommand, GetDimensionValuesCommand } from "@aws-sdk/client-cost-explorer";
 import { DynamoDBClient, GetItemCommand, ScanCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
 import { ListAccountsCommand, OrganizationsClient } from "@aws-sdk/client-organizations";
+import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { gzipSync, gunzipSync } from "node:zlib";
 import { assumeManagedRole, verifyManagedRoleAccess } from "./cross-account.mjs";
 
@@ -15,6 +16,9 @@ const targetGroupNames = new Set([...pmaGroupNames, "老代付组"]);
 const prefix = "AWSBusinessSupportPlus_";
 const tolerance = 0.01;
 const supportWebhookUrl = process.env.WECOM_SUPPORT_WEBHOOK_URL || "";
+const supportWebhookSecretId = process.env.WECOM_SUPPORT_WEBHOOK_SECRET_ID || "";
+const secrets = new SecretsManagerClient({ maxAttempts: 5 });
+let supportWebhookUrlPromise;
 const historyCachePrefix = "supportBillingHistory_";
 const historyScans = new Map();
 
@@ -706,6 +710,39 @@ function notificationText(value) {
   return String(value ?? "").replace(/[<>&`\r\n]/g, " ").trim().slice(0, 80);
 }
 
+async function loadSupportWebhookUrl() {
+  if (supportWebhookUrl) return supportWebhookUrl;
+  if (!supportWebhookSecretId) throw new Error("企业微信机器人未配置");
+  if (!supportWebhookUrlPromise) {
+    supportWebhookUrlPromise = secrets.send(new GetSecretValueCommand({ SecretId: supportWebhookSecretId })).then((result) => {
+      if (!result.SecretString) throw new Error("企业微信机器人密钥为空");
+      let value = result.SecretString.trim();
+      try {
+        const parsed = JSON.parse(value);
+        value = String(parsed.webhookUrl || parsed.url || "").trim();
+      } catch {}
+      return value;
+    }).catch((error) => {
+      supportWebhookUrlPromise = undefined;
+      throw error;
+    });
+  }
+  return supportWebhookUrlPromise;
+}
+
+async function sendSupportWebhook(content) {
+  const webhook = new URL(await loadSupportWebhookUrl());
+  if (webhook.protocol !== "https:" || webhook.hostname !== "qyapi.weixin.qq.com" || webhook.pathname !== "/cgi-bin/webhook/send" || !webhook.searchParams.get("key")) throw new Error("企业微信机器人地址不正确");
+  const response = await fetch(webhook, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ msgtype: "markdown", markdown: { content } }),
+    signal: AbortSignal.timeout(6000),
+  });
+  const payload = await response.json();
+  if (!response.ok || payload?.errcode !== 0) throw new Error(payload?.errmsg || `企业微信通知失败：HTTP ${response.status}`);
+}
+
 function pendingSupportCount(snapshot, periodKey) {
   const pendingStatuses = new Set(["create", "update", "period_range_error", "query_error", "data_pending", "zero_risk", "mapping_error", "duplicate_cli"]);
   return (snapshot.accounts || []).filter((account) => pendingStatuses.has(account?.[periodKey]?.status)).length;
@@ -775,27 +812,14 @@ function supportSyncNotificationContents(payer, snapshot, periodKey, targets, au
 }
 
 async function sendSupportSyncNotification(payer, snapshot, periodKey, targets, automatic, summary, beforeSync) {
-  if (!supportWebhookUrl) return;
-  const webhook = new URL(supportWebhookUrl);
-  if (webhook.protocol !== "https:" || webhook.hostname !== "qyapi.weixin.qq.com" || webhook.pathname !== "/cgi-bin/webhook/send") throw new Error("企业微信机器人地址不正确");
   const contents = supportSyncNotificationContents(payer, snapshot, periodKey, targets, automatic, summary, beforeSync);
   for (const [index, content] of contents.entries()) {
     if (index) await new Promise((resolve) => setTimeout(resolve, 3100));
-    const response = await fetch(webhook, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ msgtype: "markdown", markdown: { content } }),
-      signal: AbortSignal.timeout(6000),
-    });
-    const payload = await response.json();
-    if (!response.ok || payload?.errcode !== 0) throw new Error(payload?.errmsg || `企业微信通知失败：HTTP ${response.status}`);
+    await sendSupportWebhook(content);
   }
 }
 
 async function sendDailySupportSyncNotification(results) {
-  if (!supportWebhookUrl) return;
-  const webhook = new URL(supportWebhookUrl);
-  if (webhook.protocol !== "https:" || webhook.hostname !== "qyapi.weixin.qq.com" || webhook.pathname !== "/cgi-bin/webhook/send") throw new Error("企业微信机器人地址不正确");
   const payerFailures = results.filter((item) => item.error);
   const totals = results.reduce((sum, item) => ({
     pending: sum.pending + Number(item.pending || 0),
@@ -830,14 +854,26 @@ async function sendDailySupportSyncNotification(results) {
     ...changeLines,
     ...visibleIssues,
   ].join("\n");
-  const response = await fetch(webhook, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ msgtype: "markdown", markdown: { content } }),
-    signal: AbortSignal.timeout(6000),
-  });
-  const payload = await response.json();
-  if (!response.ok || payload?.errcode !== 0) throw new Error(payload?.errmsg || `企业微信通知失败：HTTP ${response.status}`);
+  await sendSupportWebhook(content);
+}
+
+export function supportScanSummaryContent(payers, now = new Date()) {
+  const members = payers.reduce((sum, payer) => sum + Number(payer.accountCount || 0), 0);
+  const pending = payers.reduce((sum, payer) => sum + Number(payer.pendingCount || 0), 0);
+  const problems = payers.filter((payer) => payer.lastStatus === "failed" || payer.lastStatus === "partial" || Number(payer.blockedCount || 0) > 0);
+  const time = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(now);
+  const details = problems.slice(0, 8).map((payer) => `${notificationText(payer.remark)}：${notificationText(payer.lastMessage || `${payer.blockedCount || 0} 个成员需检查`)}`);
+  if (problems.length > details.length) details.push(`另有 ${problems.length - details.length} 个代付需检查，请在网页查看`);
+  return [
+    `**Support+ 扫描完成｜${time}**`,
+    `代付 ${payers.length}｜成员 ${members}`,
+    `待处理 ${pending}｜需检查 ${problems.length}`,
+    ...(details.length ? details : ["全部正常"]),
+  ].join("\n");
+}
+
+async function sendSupportScanSummaryNotification(payers) {
+  await sendSupportWebhook(supportScanSummaryContent(payers));
 }
 
 async function syncAction(payer, periodKey, targets, automatic = false, persist = saveSnapshot, notify = true) {
@@ -961,6 +997,13 @@ export async function handleSupportBillingRequest({ method, body, identity }) {
   if (identity?.role !== "super_admin" && identity?.role !== "admin") fail("Administrator permission required", 403);
   if (method === "GET") return { payers: (await listPayers()).map(publicPayer) };
   if (method !== "POST") fail("Method not allowed", 405);
+  if (body.action === "notify_scan_summary") {
+    const requestedIds = new Set(Array.isArray(body.accountIds) ? body.accountIds.map(String).filter((value) => /^\d{12}$/.test(value)) : []);
+    const payers = (await listPayers()).filter((payer) => !requestedIds.size || requestedIds.has(payer.accountId));
+    if (!payers.length) fail("没有可汇总的代付账号");
+    await sendSupportScanSummaryNotification(payers);
+    return { notified: true, accounts: payers.length };
+  }
   const payer = await requirePayer(String(body.accountId || ""));
   if (body.action === "set_auto_sync") return setAutoSyncAction(payer, body.targetAccountId, body.enabled);
   const period = requestedPeriod(body.period);

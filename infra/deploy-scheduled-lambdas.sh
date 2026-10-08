@@ -64,7 +64,7 @@ source_environment() {
 
 environment_keys() {
   case "$1" in
-    support-billing) printf '%s' '["ACCOUNTS_TABLE","GROUPS_TABLE","WECOM_SUPPORT_WEBHOOK_URL"]' ;;
+    support-billing) printf '%s' '["ACCOUNTS_TABLE","GROUPS_TABLE","WECOM_SUPPORT_WEBHOOK_URL","WECOM_SUPPORT_WEBHOOK_SECRET_ID"]' ;;
     apn-monitor) printf '%s' '["ACCOUNTS_TABLE","GROUPS_TABLE","APN_MONITOR_TABLE","APN_ACCOUNT_ID","APN_PARTNER_REGION","WECOM_APN_WEBHOOK_URL","WECOM_SUPPORT_WEBHOOK_URL","WECOM_APN_WEBHOOK_SECRET_ID"]' ;;
     credit-monitor) printf '%s' '["ACCOUNTS_TABLE","GROUPS_TABLE","CREDIT_MONITOR_TABLE","WECOM_CREDIT_WEBHOOK_URL","WECOM_SUPPORT_WEBHOOK_URL","WECOM_CREDIT_WEBHOOK_SECRET_ID","WECOM_APN_WEBHOOK_SECRET_ID"]' ;;
     ou-automation) printf '%s' '["ACCOUNTS_TABLE","GROUPS_TABLE","OU_HISTORY_TABLE","OU_AUTOMATION_GROUP_NAMES"]' ;;
@@ -83,6 +83,9 @@ write_environment() {
 secret_arn() {
   local component="$1" source_json="$2" secret_id=""
   case "$component" in
+    support-billing)
+      secret_id="$(jq -r '.WECOM_SUPPORT_WEBHOOK_SECRET_ID // empty' <<<"$source_json")"
+      ;;
     apn-monitor)
       secret_id="$(jq -r '.WECOM_APN_WEBHOOK_SECRET_ID // empty' <<<"$source_json")"
       ;;
