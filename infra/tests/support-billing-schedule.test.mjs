@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { scheduledSupportPeriods, supportBillingRange, supportBillingScheduleDecision, supportScanSummaryContent } from "../lambda/support-billing.mjs";
+import { executedSupportBillingResults, scheduledSupportPeriods, supportBillingRange, supportBillingScheduleDecision, supportScanSummaryContent } from "../lambda/support-billing.mjs";
 
 function payer(overrides = {}) {
   return { snapshot: { accounts: [] }, lastScanAt: "", lastStatus: "", lastAutoSyncAt: "", ...overrides };
@@ -56,6 +56,14 @@ test("runs daily and syncs both periods during the first ten days", () => {
   assert.equal(decision.reason, "previous-month-closeout");
   assert.deepEqual(scheduledSupportPeriods(now), ["previous", "current"]);
   assert.deepEqual(scheduledSupportPeriods(new Date("2026-10-11T02:15:00+08:00")), ["current"]);
+});
+
+test("does not confuse skipped member counts with a skipped payer run", () => {
+  const results = [
+    { payerName: "已跳过", skipped: true },
+    { payerName: "已执行", skipped: 140, updated: 2 },
+  ];
+  assert.deepEqual(executedSupportBillingResults(results), [results[1]]);
 });
 
 test("manual scan summary stays concise and reports actionable totals", () => {

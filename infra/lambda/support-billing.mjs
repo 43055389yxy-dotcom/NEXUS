@@ -711,6 +711,10 @@ export function scheduledSupportPeriods(now = new Date()) {
   return chinaDateParts(now).day <= 10 ? ["previous", "current"] : ["current"];
 }
 
+export function executedSupportBillingResults(results) {
+  return results.filter((item) => item.skipped !== true);
+}
+
 function notificationText(value) {
   return String(value ?? "").replace(/[<>&`\r\n]/g, " ").trim().slice(0, 80);
 }
@@ -994,7 +998,7 @@ export async function runScheduledSupportBilling({ now = new Date() } = {}) {
     }
     catch (error) { await markFailure(payer, error?.message || "自动对账失败"); results.push({ accountId: payer.accountId, payerName: payer.remark, error: error?.message || "自动对账失败", schedule }); }
   }
-  const executed = results.filter((item) => !item.skipped);
+  const executed = executedSupportBillingResults(results);
   if (executed.length) {
     try { await sendDailySupportSyncNotification(executed); }
     catch (error) { console.error("Support billing scheduled summary notification failed", error); }
