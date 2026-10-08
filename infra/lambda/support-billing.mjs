@@ -788,13 +788,13 @@ function supportSyncNotificationContents(payer, snapshot, periodKey, targets, au
   const details = changes.map((change) => `${notificationText(payer.remark)} · ${notificationText(change.accountName)}：${change.previousAmount} → ${change.nextAmount}`);
   const warnings = supportDataWarnings(payer, snapshot);
   const scanComplete = snapshot?.diagnostics?.accountDiscoveryRefreshed === true;
-  const summaryLine = [`待处理 ${summary.pending || 0}`, `已同步 ${summary.synced || 0}`, `失败 ${summary.failed || 0}`, summary.repaired ? `修正 ${summary.repaired}` : ""].filter(Boolean).join("｜");
+  const summaryLine = [summary.failed ? `失败 ${summary.failed}` : "", summary.repaired ? `修正 ${summary.repaired}` : ""].filter(Boolean).join("｜");
   const time = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date());
   const title = summary.failed || warnings.length ? "Support+ 对账异常" : changes.length ? "Support+ 费用更新" : "Support+ 对账完成";
   const header = [
     `**${title}｜${time}**`,
-    summaryLine,
-    ...(changes.length ? [] : [scanComplete ? "扫描正常｜费用无变化" : "扫描不完整｜不能判断账号或费用是否有变化"]),
+    ...(summaryLine ? [summaryLine] : []),
+    ...(changes.length || warnings.length ? [] : [scanComplete ? "无费用变化" : "扫描不完整"]),
   ];
   details.push(...warnings);
   const pages = []; let page = [];
@@ -837,20 +837,15 @@ async function sendDailySupportSyncNotification(results) {
   const fullyRefreshed = results.length > 0 && results.every((item) => !item.error && item.scan?.refreshed === true);
   const addedAccounts = results.reduce((sum, item) => sum + Number(item.scan?.addedAccounts || 0), 0);
   const title = issueLines.length || totals.failed ? "Support+ 对账异常" : hasChanges ? "Support+ 费用更新" : "Support+ 对账完成";
-  const summary = [
-    `待处理 ${totals.pending}`,
-    `已同步 ${totals.synced}`,
-    `失败 ${totalFailures}`,
-    totals.repaired ? `修正 ${totals.repaired}` : "",
-  ].filter(Boolean).join("｜");
+  const summary = [totalFailures ? `失败 ${totalFailures}` : "", totals.repaired ? `修正 ${totals.repaired}` : ""].filter(Boolean).join("｜");
   const changeLines = changes.slice(0, 12).map((change) => `${notificationText(change.payerName)} · ${notificationText(change.accountName)}：${change.previousAmount} → ${change.nextAmount}`);
   if (changes.length > changeLines.length) changeLines.push(`另有 ${changes.length - changeLines.length} 项费用更新，请在网页查看`);
   const visibleIssues = issueLines.slice(0, 8);
   if (issueLines.length > visibleIssues.length) visibleIssues.push(`另有 ${issueLines.length - visibleIssues.length} 项数据异常，请在网页查看`);
   const content = [
     `**${title}｜${time}**`,
-    summary,
-    ...(!hasChanges ? [issueLines.length || totals.failed || !fullyRefreshed ? "扫描不完整｜不能判断账号或费用是否有变化" : `扫描正常｜${addedAccounts ? `新增账号 ${addedAccounts} 个` : "无新增账号"}｜费用无变化`] : []),
+    ...(summary ? [summary] : []),
+    ...(!hasChanges && !issueLines.length && !totals.failed ? [fullyRefreshed ? (addedAccounts ? `新增账号 ${addedAccounts} 个` : "无费用变化") : "扫描不完整"] : []),
     ...changeLines,
     ...visibleIssues,
   ].join("\n");
@@ -858,17 +853,24 @@ async function sendDailySupportSyncNotification(results) {
 }
 
 export function supportScanSummaryContent(payers, now = new Date()) {
-  const members = payers.reduce((sum, payer) => sum + Number(payer.accountCount || 0), 0);
-  const pending = payers.reduce((sum, payer) => sum + Number(payer.pendingCount || 0), 0);
-  const problems = payers.filter((payer) => payer.lastStatus === "failed" || payer.lastStatus === "partial" || Number(payer.blockedCount || 0) > 0);
   const time = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(now);
-  const details = problems.slice(0, 8).map((payer) => `${notificationText(payer.remark)}：${notificationText(payer.lastMessage || `${payer.blockedCount || 0} 个成员需检查`)}`);
-  if (problems.length > details.length) details.push(`另有 ${problems.length - details.length} 个代付需检查，请在网页查看`);
+  const money = (value) => value === null || value === undefined ? "未创建" : `USD ${cents(value).toFixed(2)}`;
+  const changes = payers.flatMap((payer) => (payer.snapshot?.accounts || []).flatMap((account) => {
+    const item = account.current;
+    if (!item || !["create", "update", "period_range_error"].includes(item.status)) return [];
+    return [`${notificationText(payer.remark)} · ${notificationText(account.name)}：${money(item.synced)} → ${money(item.aws)}`];
+  }));
+  const warnings = payers.flatMap((payer) => {
+    const sources = new Set((payer.snapshot?.diagnostics?.viewWarnings || []).map((warning) => warning.sourceAccountId || warning.viewName).filter(Boolean));
+    return sources.size ? [`${notificationText(payer.remark)}：${sources.size} 个账单视图数据待更新`] : [];
+  });
+  const failures = payers.filter((payer) => payer.lastStatus === "failed").map((payer) => `${notificationText(payer.remark)}：${notificationText(payer.lastMessage || "扫描失败")}`);
+  const details = [...changes, ...warnings, ...failures];
+  const visible = details.slice(0, 12);
+  if (details.length > visible.length) visible.push(`另有 ${details.length - visible.length} 项，请在网页查看`);
   return [
     `**Support+ 扫描完成｜${time}**`,
-    `代付 ${payers.length}｜成员 ${members}`,
-    `待处理 ${pending}｜需检查 ${problems.length}`,
-    ...(details.length ? details : ["全部正常"]),
+    ...(visible.length ? visible : ["无费用变化"]),
   ].join("\n");
 }
 

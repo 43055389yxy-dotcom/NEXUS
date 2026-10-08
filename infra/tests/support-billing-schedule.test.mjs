@@ -44,13 +44,12 @@ test("runs when no automatic scan has been recorded", () => {
 
 test("manual scan summary stays concise and reports actionable totals", () => {
   const content = supportScanSummaryContent([
-    { remark: "PMA1", accountCount: 10, pendingCount: 1, blockedCount: 0, lastStatus: "success", lastMessage: "" },
-    { remark: "北跳", accountCount: 6, pendingCount: 0, blockedCount: 2, lastStatus: "partial", lastMessage: "2 个账单视图数据待更新" },
+    { remark: "PMA1", lastStatus: "partial", snapshot: { accounts: [{ name: "zm", current: { status: "update", synced: 29, aws: 33.25 } }], diagnostics: { viewWarnings: Array.from({ length: 6 }, (_, index) => ({ sourceAccountId: String(index) })) } } },
+    { remark: "北跳", lastStatus: "success", snapshot: { accounts: [{ name: "Lucas", current: { status: "normal", synced: 7.07, aws: 7.07 } }], diagnostics: { viewWarnings: [] } } },
   ], new Date("2026-10-08T09:30:00+08:00"));
   assert.equal(content, [
     "**Support+ 扫描完成｜10/08 09:30**",
-    "代付 2｜成员 16",
-    "待处理 1｜需检查 1",
-    "北跳：2 个账单视图数据待更新",
+    "PMA1 · zm：USD 29.00 → USD 33.25",
+    "PMA1：6 个账单视图数据待更新",
   ].join("\n"));
 });
