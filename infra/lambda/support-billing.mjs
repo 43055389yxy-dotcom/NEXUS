@@ -876,6 +876,12 @@ async function sendSupportScanSummaryNotification(payers) {
   await sendSupportWebhook(supportScanSummaryContent(payers));
 }
 
+export async function sendSupportBillingNotificationHealthcheck() {
+  const payers = await listPayers();
+  await sendSupportScanSummaryNotification(payers);
+  return { notified: true, accounts: payers.length };
+}
+
 async function syncAction(payer, periodKey, targets, automatic = false, persist = saveSnapshot, notify = true) {
   const clients = await clientsFor(payer);
   const previousSnapshot = payer.snapshot;

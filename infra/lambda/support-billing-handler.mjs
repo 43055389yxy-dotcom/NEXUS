@@ -1,8 +1,8 @@
-import { isSupportBillingScheduledEvent, preflightSupportBillingAccess, runScheduledSupportBilling } from "./support-billing.mjs";
+import { isSupportBillingScheduledEvent, preflightSupportBillingAccess, runScheduledSupportBilling, sendSupportBillingNotificationHealthcheck } from "./support-billing.mjs";
 import { checkCrossAccountBridge } from "./cross-account.mjs";
 import { createScheduledHandler } from "./scheduled-handler.mjs";
 
-export const handler = createScheduledHandler({
+const scheduledHandler = createScheduledHandler({
   task: "support-billing",
   matches: isSupportBillingScheduledEvent,
   run: runScheduledSupportBilling,
@@ -10,3 +10,10 @@ export const handler = createScheduledHandler({
   checkAccess: preflightSupportBillingAccess,
   requiredEnvironment: ["ACCOUNTS_TABLE", "GROUPS_TABLE"],
 });
+
+export async function handler(event = {}) {
+  if (event?.notificationHealthcheck === true) {
+    return { ok: true, task: "support-billing", notification: await sendSupportBillingNotificationHealthcheck() };
+  }
+  return scheduledHandler(event);
+}
