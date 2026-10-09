@@ -665,7 +665,7 @@ async function writeSync(payer, clients, snapshot, periodKey, targets, automatic
     } catch (error) { summary.failed += 1; item.status = "query_error"; item.suggestion = `同步失败：${error?.message || error}`; }
   }
   const warningCount = supportWarningCount(payer, snapshot);
-  const message = `创建 ${summary.created}，更新 ${summary.updated}，修正 ${summary.repaired}，失败 ${summary.failed}${warningCount ? `，${warningCount} 个账单视图等待自动重试` : ""}`;
+  const message = `创建 ${summary.created}，更新 ${summary.updated}，修正 ${summary.repaired}，失败 ${summary.failed}${warningCount ? `，${warningCount} 个账单视图本次跳过` : ""}`;
   await persist(payer, snapshot, summary.failed || warningCount ? "partial" : "success", message, automatic);
   return { summary, snapshot };
 }
@@ -674,7 +674,7 @@ async function scanAction(payer, persist = saveSnapshot) {
   const clients = await clientsFor(payer);
   const snapshot = await scanWithClients(payer, clients);
   const warningCount = supportWarningCount(payer, snapshot);
-  await persist(payer, snapshot, warningCount ? "partial" : "success", warningCount ? `${warningCount} 个账单视图等待自动重试` : `扫描 ${snapshot.accounts.length} 个账号`);
+  await persist(payer, snapshot, warningCount ? "partial" : "success", warningCount ? `${warningCount} 个账单视图本次跳过` : `扫描 ${snapshot.accounts.length} 个账号`);
   return snapshot;
 }
 
@@ -701,8 +701,6 @@ export function supportBillingScheduleDecision(payer, now = new Date()) {
 
   const lastAutomatic = new Date(payer.lastAutoSyncAt || "");
   const elapsedDays = Number.isNaN(lastAutomatic.getTime()) ? null : beijingDayNumber(now) - beijingDayNumber(lastAutomatic);
-  const sameDayRetry = elapsedDays === 0 && ["partial", "failed"].includes(payer.lastStatus);
-  if (sameDayRetry) return { due: true, reason: "same-day-retry", monthEndDaily, elapsedDays };
   if (monthEndDaily) return { due: true, reason: "month-end-daily", monthEndDaily, elapsedDays };
   if (current.day <= 10) return { due: true, reason: "previous-month-closeout", monthEndDaily, elapsedDays };
   if (elapsedDays === null) return { due: true, reason: "first-automatic-scan", monthEndDaily, elapsedDays };
@@ -801,7 +799,7 @@ function supportWarningCount(payer, snapshot) {
 
 export function supportDataWarnings(payer, snapshot) {
   const count = supportWarningCount(payer, snapshot);
-  return count ? [`${notificationText(payer.remark)}：${count} 个账单视图暂无数据，后续自动重试`] : [];
+  return count ? [`${notificationText(payer.remark)}：${count} 个账单视图暂无数据，本次跳过`] : [];
 }
 
 export function supportSyncNotificationContents(payer, snapshot, periodKey, targets, automatic, summary, beforeSync, now = new Date()) {
@@ -812,7 +810,7 @@ export function supportSyncNotificationContents(payer, snapshot, periodKey, targ
   const warnings = supportDataWarnings(payer, snapshot);
   const summaryLine = [summary.failed ? `失败 ${summary.failed}` : "", summary.repaired ? `修正 ${summary.repaired}` : ""].filter(Boolean).join("｜");
   const time = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(now);
-  const title = summary.failed ? "Support+ 对账失败" : changes.length ? "Support+ 费用更新" : warnings.length ? "Support+ 自动重试" : "Support+ 对账完成";
+  const title = summary.failed ? "Support+ 对账失败" : changes.length ? "Support+ 费用更新" : "Support+ 对账完成";
   return [[
     `**${title}｜${time}**`,
     ...(summaryLine ? [summaryLine] : []),
@@ -846,7 +844,7 @@ export function dailySupportSyncNotificationContent(results, now = new Date()) {
   const hasChanges = totals.synced > 0;
   const fullyRefreshed = results.length > 0 && results.every((item) => !item.error && item.scan?.refreshed === true);
   const addedAccounts = results.reduce((sum, item) => sum + Number(item.scan?.addedAccounts || 0), 0);
-  const title = totalFailures ? "Support+ 对账失败" : hasChanges ? "Support+ 费用更新" : warningLines.length ? "Support+ 自动重试" : "Support+ 对账完成";
+  const title = totalFailures ? "Support+ 对账失败" : hasChanges ? "Support+ 费用更新" : "Support+ 对账完成";
   const summary = [totalFailures ? `失败 ${totalFailures}` : "", totals.repaired ? `修正 ${totals.repaired}` : ""].filter(Boolean).join("｜");
   const changeLines = changes.slice(0, 10).map((change) => `${change.periodKey === "previous" ? "上月 · " : ""}${notificationText(change.payerName)} · ${notificationText(change.accountName)}：${change.previousAmount} → ${change.nextAmount}`);
   if (changes.length > changeLines.length) changeLines.push(`另有 ${changes.length - changeLines.length} 项费用更新，请在网页查看`);
@@ -939,7 +937,7 @@ async function syncScheduledPeriodsAction(payer, periodKeys) {
 
   const warnings = supportDataWarnings(payer, snapshot);
   const warningCount = supportWarningCount(payer, snapshot);
-  const message = `创建 ${summary.created}，更新 ${summary.updated}，修正 ${summary.repaired}，失败 ${summary.failed}${warningCount ? `，${warningCount} 个账单视图等待自动重试` : ""}`;
+  const message = `创建 ${summary.created}，更新 ${summary.updated}，修正 ${summary.repaired}，失败 ${summary.failed}${warningCount ? `，${warningCount} 个账单视图本次跳过` : ""}`;
   await saveSnapshot(payer, snapshot, summary.failed || warnings.length ? "partial" : "success", message, true);
   return { summary, snapshot, changes, warnings, scan: supportScanDiagnostics(snapshot, previousSnapshot) };
 }

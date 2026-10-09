@@ -36,15 +36,15 @@ test("skips any duplicate after a successful scan on the same Beijing date", () 
   assert.equal(decision.reason, "already-successful-today");
 });
 
-test("retries an incomplete automatic scan later on the same Beijing date", () => {
+test("does not retry an incomplete automatic scan later on the same Beijing date", () => {
   const now = new Date("2026-10-15T06:15:00+08:00");
   const decision = supportBillingScheduleDecision(payer({
     lastAutoSyncAt: "2026-10-15T02:15:00+08:00",
     lastScanAt: "2026-10-15T02:15:00+08:00",
     lastStatus: "partial",
   }), now);
-  assert.equal(decision.due, true);
-  assert.equal(decision.reason, "same-day-retry");
+  assert.equal(decision.due, false);
+  assert.equal(decision.reason, "waiting-three-day-cadence");
 });
 
 test("runs when no automatic scan has been recorded", () => {
@@ -84,29 +84,29 @@ test("scheduled notification shows changes and summarizes unavailable billing vi
     repaired: 0,
     synced: 1,
     changes: [{ periodKey: "previous", accountName: "zm", previousAmount: "$33.25", nextAmount: "$34.93" }],
-    warnings: ["PMA1：3 个账单视图暂无数据，后续自动重试"],
+    warnings: ["PMA1：3 个账单视图暂无数据，本次跳过"],
     scan: { refreshed: false },
   }], new Date("2026-10-08T16:15:00+08:00"));
   assert.equal(content, [
     "**Support+ 费用更新｜10/08 16:15**",
     "上月 · PMA1 · zm：$33.25 → $34.93",
-    "PMA1：3 个账单视图暂无数据，后续自动重试",
+    "PMA1：3 个账单视图暂无数据，本次跳过",
   ].join("\n"));
 });
 
-test("unavailable billing data is labeled as an automatic retry", () => {
+test("unavailable billing data is skipped without an extra retry alert", () => {
   const content = dailySupportSyncNotificationContent([{
     payerName: "PMA1",
     failed: 0,
     repaired: 0,
     synced: 0,
     changes: [],
-    warnings: ["PMA1：3 个账单视图暂无数据，后续自动重试"],
+    warnings: ["PMA1：3 个账单视图暂无数据，本次跳过"],
     scan: { refreshed: false },
   }], new Date("2026-10-08T16:13:00+08:00"));
   assert.equal(content, [
-    "**Support+ 自动重试｜10/08 16:13**",
-    "PMA1：3 个账单视图暂无数据，后续自动重试",
+    "**Support+ 对账完成｜10/08 16:13**",
+    "PMA1：3 个账单视图暂无数据，本次跳过",
   ].join("\n"));
 });
 
@@ -121,7 +121,7 @@ test("warning summary excludes duplicate discovery text and unavailable previous
       { period: "current", sourceAccountId: "851725571764", error: "部分账单视图查询失败，成员账号名单未完整刷新" },
     ] },
   });
-  assert.deepEqual(value, ["PMA1：3 个账单视图暂无数据，后续自动重试"]);
+  assert.deepEqual(value, ["PMA1：3 个账单视图暂无数据，本次跳过"]);
 });
 
 test("manual scan summary stays concise and reports actionable totals", () => {
@@ -132,6 +132,6 @@ test("manual scan summary stays concise and reports actionable totals", () => {
   assert.equal(content, [
     "**Support+ 扫描完成｜10/08 09:30**",
     "PMA1 · zm：USD 29.00 → USD 33.25",
-    "PMA1：6 个账单视图暂无数据，后续自动重试",
+    "PMA1：6 个账单视图暂无数据，本次跳过",
   ].join("\n"));
 });
