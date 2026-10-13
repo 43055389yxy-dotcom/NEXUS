@@ -15,7 +15,7 @@ cat >/tmp/nexus-support-billing-assume-role-policy.json <<'JSON'
 JSON
 aws iam put-role-policy --role-name "$EXECUTION_ROLE_NAME" --policy-name NexusSupportBillingAssumeRole --policy-document file:///tmp/nexus-support-billing-assume-role-policy.json
 
-RULE_ARN="$(aws events put-rule --name "$RULE_NAME" --schedule-expression 'cron(15 18 * * ? *)' --state ENABLED --description 'NEXUS Support billing cadence check at 02:15 Asia/Shanghai' --region "$REGION" --query RuleArn --output text)"
+RULE_ARN="$(aws events put-rule --name "$RULE_NAME" --schedule-expression 'cron(15 6 * * ? *)' --state ENABLED --description 'NEXUS Support billing cadence check at 14:15 Asia/Shanghai' --region "$REGION" --query RuleArn --output text)"
 if ! aws lambda get-policy --function-name "$FUNCTION_NAME" --region "$REGION" --query Policy --output text 2>/dev/null | grep -q "$STATEMENT_ID"; then
   aws lambda add-permission --function-name "$FUNCTION_NAME" --statement-id "$STATEMENT_ID" --action lambda:InvokeFunction --principal events.amazonaws.com --source-arn "$RULE_ARN" --region "$REGION" >/dev/null
 fi
@@ -23,4 +23,4 @@ cat >/tmp/nexus-support-billing-targets.json <<JSON
 [{"Id":"nexus-support-billing-lambda","Arn":"$FUNCTION_ARN","Input":"{\"task\":\"support-billing\"}"}]
 JSON
 aws events put-targets --rule "$RULE_NAME" --targets file:///tmp/nexus-support-billing-targets.json --region "$REGION" >/dev/null
-echo "已配置：Support 对账每天北京时间 02:15 判断；本次无数据的账单视图直接跳过，等待下次正常运行"
+echo "已配置：Support 对账每天北京时间 14:15 判断；本次无数据的账单视图直接跳过，等待下次正常运行"
