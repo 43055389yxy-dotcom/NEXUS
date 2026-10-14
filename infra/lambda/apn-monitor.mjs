@@ -546,10 +546,6 @@ async function refreshAccount(account, rules, watchlist) {
     }
     const previousTracked = old ? parseJson(old.trackedJson) : {};
     const currentTracked = tracked(candidate);
-    if (!old && Object.values(currentTracked).every(emptyTrackedValue)) {
-      console.warn("APN monitor skipped an empty initial snapshot", { resourceType: candidate.resourceType, externalId: candidate.externalId });
-      continue;
-    }
     const item = stabilizeTrackedResource(candidate, previousTracked);
     const retainedFields = Object.keys(currentTracked).filter((field) => emptyTrackedValue(currentTracked[field]) && !emptyTrackedValue(previousTracked[field]));
     if (retainedFields.length) console.warn("APN monitor retained previous non-empty fields", { resourceType: item.resourceType, externalId: item.externalId, fields: retainedFields });
