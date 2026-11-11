@@ -77,7 +77,7 @@ test("does not confuse skipped member counts with a skipped payer run", () => {
   assert.deepEqual(executedSupportBillingResults(results), [results[1]]);
 });
 
-test("scheduled notification shows changes and summarizes unavailable billing views", () => {
+test("scheduled notification shows changes without unavailable billing views", () => {
   const content = dailySupportSyncNotificationContent([{
     payerName: "PMA1",
     failed: 0,
@@ -90,11 +90,10 @@ test("scheduled notification shows changes and summarizes unavailable billing vi
   assert.equal(content, [
     "**Support+ 费用更新｜10/08 16:15**",
     "上月 · PMA1 · zm：$33.25 → $34.93",
-    "PMA1：3 个账单视图暂无数据，本次跳过",
   ].join("\n"));
 });
 
-test("unavailable billing data is skipped without an extra retry alert", () => {
+test("unavailable billing data is omitted from notifications", () => {
   const content = dailySupportSyncNotificationContent([{
     payerName: "PMA1",
     failed: 0,
@@ -106,7 +105,7 @@ test("unavailable billing data is skipped without an extra retry alert", () => {
   }], new Date("2026-10-08T16:13:00+08:00"));
   assert.equal(content, [
     "**Support+ 对账完成｜10/08 16:13**",
-    "PMA1：3 个账单视图暂无数据，本次跳过",
+    "无费用变化",
   ].join("\n"));
 });
 
@@ -132,6 +131,5 @@ test("manual scan summary stays concise and reports actionable totals", () => {
   assert.equal(content, [
     "**Support+ 扫描完成｜10/08 09:30**",
     "PMA1 · zm：USD 29.00 → USD 33.25",
-    "PMA1：6 个账单视图暂无数据，本次跳过",
   ].join("\n"));
 });

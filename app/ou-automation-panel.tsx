@@ -18,7 +18,6 @@ export const OuAutomationPanel = forwardRef<OuAutomationHandle, { onNotice: (mes
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [accounts, setAccounts] = useState<AutomationAccount[]>([]);
-  const [accountQuery, setAccountQuery] = useState('');
   const [globalMemberId, setGlobalMemberId] = useState('');
   const [selectedAccountId, setSelectedAccountId] = useState('');
   const [discovery, setDiscovery] = useState<Discovery | null>(null);
@@ -67,7 +66,7 @@ export const OuAutomationPanel = forwardRef<OuAutomationHandle, { onNotice: (mes
     const payload = await response.json() as { accounts?: AutomationAccount[]; error?: string; preview?: boolean };
     if (!response.ok) throw new Error(payload.error ?? '代付账号读取失败');
     setPreviewMode(Boolean(payload.preview));
-    const next = payload.accounts ?? [];
+    const next = [...(payload.accounts ?? [])].sort((left, right) => Number(allFeaturesDisabled(left)) - Number(allFeaturesDisabled(right)));
     setAccounts(next);
     const nextId = preferredAccountId || selectedAccountId || next[0]?.accountId || '';
     setSelectedAccountId(nextId);
@@ -170,8 +169,6 @@ export const OuAutomationPanel = forwardRef<OuAutomationHandle, { onNotice: (mes
     } finally { setHistoryLoading(false); }
   }
 
-  const accountNeedle = accountQuery.trim().toLocaleLowerCase('zh-CN');
-  const visibleAccounts = accounts.filter((account) => !accountNeedle || [account.remark, account.accountId, account.groupName].some((value) => value.toLocaleLowerCase('zh-CN').includes(accountNeedle)));
   const memberNeedle = memberQuery.trim().toLocaleLowerCase('zh-CN');
   const visibleMembers = members.filter((member) => (memberFilter === 'all' || member.restrictionStatus === memberFilter) && (!memberNeedle || [member.name, member.email, member.accountId].some((value) => value.toLocaleLowerCase('zh-CN').includes(memberNeedle))));
   const counts = members.reduce((value, member) => ({ ...value, [member.restrictionStatus]: value[member.restrictionStatus] + 1 }), { restricted: 0, missing: 0, exempt: 0 });
@@ -186,15 +183,14 @@ export const OuAutomationPanel = forwardRef<OuAutomationHandle, { onNotice: (mes
     {open && <div className={styles.layer} onMouseDown={(event) => event.target === event.currentTarget && setOpen(false)}>
       <section className={styles.dialog} role="dialog" aria-modal="true">
         <button className={styles.close} onClick={() => setOpen(false)}>×</button>
-        <header className={styles.heading}><span>ACCOUNT GUARDRAILS</span><h2>客户账号限制</h2><p>{previewMode ? '本地预览，不执行 AWS 操作' : '直接按账号 ID 管理 5 项限制，不依赖 OU'}</p></header>
+        <header className={styles.heading}><h2>客户账号限制</h2></header>
         <div className={styles.toolbar}>
           <strong>代付账号 {accounts.length}</strong>
-          <input value={accountQuery} onChange={(event) => setAccountQuery(event.target.value)} placeholder="搜索代付账号" aria-label="搜索代付账号" />
-          <div className={styles.globalSearch}><input inputMode="numeric" maxLength={12} value={globalMemberId} onChange={(event) => setGlobalMemberId(event.target.value.replace(/\D/g, '').slice(0, 12))} onKeyDown={(event) => event.key === 'Enter' && void findMember()} placeholder="输入客户账号 ID" aria-label="输入客户账号 ID" /><button disabled={busy} onClick={() => void findMember()}>查找</button></div>
+          <div className={styles.globalSearch}><input inputMode="numeric" maxLength={12} value={globalMemberId} onChange={(event) => setGlobalMemberId(event.target.value.replace(/\D/g, '').slice(0, 12))} onKeyDown={(event) => event.key === 'Enter' && void findMember()} placeholder="搜索客户账号 ID" aria-label="搜索客户账号 ID" /><button disabled={busy} onClick={() => void findMember()}>查找</button></div>
           <aside className={styles.accountActions}><button disabled={busy || previewMode} onClick={() => void openHistory()}>操作记录</button></aside>
         </div>
         <div className={styles.layout}>
-          <aside className={styles.accounts}>{accounts.length === 0 ? <p>暂无代付账号</p> : visibleAccounts.length === 0 ? <p>没有匹配账号</p> : visibleAccounts.map((account) => <button key={account.accountId} className={selectedAccountId === account.accountId ? styles.active : ''} onClick={() => { setBusy(true); setMemberQuery(''); void inspect(account.accountId).catch((error) => onNotice(error.message)).finally(() => setBusy(false)); }}><span>{account.remark.slice(0, 1).toUpperCase()}</span><div><strong>{account.remark}</strong><small>{account.accountId} · {account.groupName}</small></div>{account.lastStatus === 'failed' && <i data-status={allFeaturesDisabled(account) ? 'features-disabled' : 'failed'} title={account.lastMessage || undefined}>{automationStatusLabel(account)}</i>}</button>)}</aside>
+          <aside className={styles.accounts}>{accounts.length === 0 ? <p>暂无代付账号</p> : accounts.map((account) => <button key={account.accountId} className={selectedAccountId === account.accountId ? styles.active : ''} onClick={() => { setBusy(true); setMemberQuery(''); void inspect(account.accountId).catch((error) => onNotice(error.message)).finally(() => setBusy(false)); }}><span>{account.remark.slice(0, 1).toUpperCase()}</span><div><strong>{account.remark}</strong><small>{account.accountId} · {account.groupName}</small></div>{account.lastStatus === 'failed' && <i data-status={allFeaturesDisabled(account) ? 'features-disabled' : 'failed'} title={account.lastMessage || undefined}>{automationStatusLabel(account)}</i>}</button>)}</aside>
           <section className={styles.config}>{busy && !discovery ? <div className={styles.empty}>正在读取...</div> : !discovery ? <div className={styles.empty}>选择一个代付账号</div> : <>
             <div className={styles.accountHead}><div><strong>{discovery.account.remark}</strong><small>{discovery.account.accountId}{cachedAt ? ` · 更新 ${formatHistoryTime(cachedAt)}` : ''}</small></div><aside className={styles.accountActions}><button disabled={busy || previewMode} onClick={() => void syncAccount(discovery.account.accountId)}>{busy ? '同步中...' : '同步全部客户'}</button></aside></div>
             <div className={styles.guardrailStats}><div><span>客户</span><strong>{members.length}</strong></div><div data-status="restricted"><span>已限制</span><strong>{counts.restricted}</strong></div><div data-status="missing"><span>待添加</span><strong>{counts.missing}</strong></div><div data-status="exempt"><span>已取消</span><strong>{counts.exempt}</strong></div></div>

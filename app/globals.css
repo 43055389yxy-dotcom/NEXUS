@@ -104,8 +104,8 @@ button { color: inherit; }
 .header-search input { min-width: 0; flex: 1; border: 0; outline: 0; color: var(--text); background: transparent; font-size: 11px; }
 .header-search input::placeholder { color: #59677d; }
 .header-search kbd { padding: 2px 7px; border: 1px solid rgba(139, 160, 190, .2); border-bottom-color: rgba(139,160,190,.35); border-radius: 5px; color: #7f8da3; background: rgba(255,255,255,.035); font: 700 10px monospace; }
-.header-actions { margin-left: auto; display: flex; align-items: center; gap: 7px; white-space: nowrap; }
-.header-actions > button, .header-actions > a { flex: 0 0 auto; white-space: nowrap; }
+.header-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.header-actions > button, .header-actions > a { width: 112px; min-width: 112px; height: 42px; padding: 0 12px; flex: 0 0 112px; display: inline-flex; align-items: center; justify-content: center; border-radius: 10px; white-space: nowrap; font-size: 10px; }
 .icon-button { width: 40px; height: 40px; border: 1px solid var(--line); border-radius: 10px; color: #8c9bb1; background: rgba(17,27,44,.72); cursor: pointer; font-size: 18px; transition: .22s; }
 .icon-button:hover { color: var(--cyan); border-color: rgba(67,214,197,.38); background: rgba(24,42,59,.9); transform: rotate(28deg); }
 .add-button { height: 38px; padding: 0 14px; border: 1px solid rgba(107,158,255,.38); border-radius: 9px; color: white; background: linear-gradient(135deg, #347fff, #1d5cca); cursor: pointer; box-shadow: 0 10px 28px rgba(29,92,202,.24), inset 0 1px 0 rgba(255,255,255,.16); font-size: 10px; font-weight: 900; transition: .22s; white-space: nowrap; }
@@ -184,14 +184,16 @@ button { color: inherit; }
 .account-form select option, .edit-dialog select option { color: #17243a; background: #e8edf4; }
 .account-form select option:checked, .edit-dialog select option:checked { color: #10213c; background: #8dbcf3; }
 
-.pma-account-filters { padding:0 50px 22px; }
+.pma-account-filters { margin:0 50px 22px; padding:12px 14px; display:flex; align-items:flex-end; gap:22px; border:1px solid rgba(126,154,195,.12); border-radius:12px; background:rgba(7,14,24,.5); }
+.pma-account-filters>section { display:grid; gap:7px; }
+.pma-account-filters>section>span { color:#65768e; font-size:9px; font-weight:850; }
 .pma-account-tabs { display:flex; align-items:center; gap:8px; }
-.pma-account-tabs button { display:inline-flex; align-items:center; gap:9px; height:38px; padding:0 16px; border:1px solid var(--line); border-radius:10px; color:#8291a8; background:rgba(10,19,32,.68); font-size:11px; font-weight:850; cursor:pointer; transition:.2s; }
+.pma-account-tabs button { min-width:148px; display:inline-flex; align-items:center; justify-content:center; gap:9px; height:40px; padding:0 16px; border:1px solid var(--line); border-radius:9px; color:#8291a8; background:rgba(10,19,32,.68); font-size:10px; font-weight:850; cursor:pointer; transition:.2s; }
 .pma-account-tabs button:hover { color:#dfe9f8; border-color:rgba(76,143,255,.35); }
 .pma-account-tabs button.active { color:#eef5ff; border-color:rgba(76,143,255,.55); background:linear-gradient(135deg,rgba(43,105,216,.32),rgba(30,82,157,.18)); box-shadow:0 8px 24px rgba(15,70,160,.12); }
 .pma-account-tabs b { min-width:20px; height:20px; padding:0 6px; display:inline-grid; place-items:center; border-radius:999px; color:#8dbcf3; background:rgba(74,139,238,.15); font-size:9px; }
-.cma-account-tabs { margin-top:10px; display:flex; align-items:center; flex-wrap:wrap; gap:7px; }
-.cma-account-tabs button { height:30px; padding:0 12px; display:inline-flex; align-items:center; gap:7px; border:1px solid rgba(126,154,195,.15); border-radius:8px; color:#71839c; background:rgba(7,15,26,.55); cursor:pointer; font-size:9px; font-weight:850; transition:.18s; }
+.cma-account-tabs { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+.cma-account-tabs button { min-width:82px; height:40px; padding:0 13px; display:inline-flex; align-items:center; justify-content:center; gap:7px; border:1px solid rgba(126,154,195,.15); border-radius:9px; color:#71839c; background:rgba(7,15,26,.55); cursor:pointer; font-size:10px; font-weight:850; transition:.18s; }
 .cma-account-tabs button:hover { color:#c9d8eb; border-color:rgba(76,143,255,.3); }
 .cma-account-tabs button.active { color:#80b8ff; border-color:rgba(76,143,255,.45); background:rgba(40,95,178,.16); box-shadow:inset 0 -2px 0 rgba(76,143,255,.48); }
 .cma-account-tabs b { min-width:17px; height:17px; padding:0 5px; display:inline-grid; place-items:center; border-radius:999px; color:inherit; background:rgba(110,147,203,.11); font-size:8px; }

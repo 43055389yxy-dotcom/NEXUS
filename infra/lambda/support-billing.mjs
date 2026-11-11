@@ -807,16 +807,14 @@ export function supportSyncNotificationContents(payer, snapshot, periodKey, targ
   const periodLabel = periodKey === "previous" ? "上月 · " : "";
   const details = changes.slice(0, 10).map((change) => `${periodLabel}${notificationText(payer.remark)} · ${notificationText(change.accountName)}：${change.previousAmount} → ${change.nextAmount}`);
   if (changes.length > details.length) details.push(`另有 ${changes.length - details.length} 项费用更新，请在网页查看`);
-  const warnings = supportDataWarnings(payer, snapshot);
   const summaryLine = [summary.failed ? `失败 ${summary.failed}` : "", summary.repaired ? `修正 ${summary.repaired}` : ""].filter(Boolean).join("｜");
   const time = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(now);
   const title = summary.failed ? "Support+ 对账失败" : changes.length ? "Support+ 费用更新" : "Support+ 对账完成";
   return [[
     `**${title}｜${time}**`,
     ...(summaryLine ? [summaryLine] : []),
-    ...(!changes.length && !warnings.length ? ["无费用变化"] : []),
+    ...(!changes.length ? ["无费用变化"] : []),
     ...details,
-    ...warnings,
   ].join("\n")];
 }
 
@@ -837,7 +835,6 @@ export function dailySupportSyncNotificationContent(results, now = new Date()) {
     failed: sum.failed + Number(item.failed || 0),
   }), { pending: 0, synced: 0, repaired: 0, failed: 0 });
   const changes = results.flatMap((item) => (item.changes || []).map((change) => ({ ...change, payerName: item.payerName })));
-  const warningLines = results.flatMap((item) => item.warnings || []);
   const time = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(now);
   const failureLines = payerFailures.map((item) => `${notificationText(item.payerName || item.accountId)}：执行失败，请在网页查看`);
   const totalFailures = totals.failed + failureLines.length;
@@ -851,10 +848,9 @@ export function dailySupportSyncNotificationContent(results, now = new Date()) {
   return [
     `**${title}｜${time}**`,
     ...(summary ? [summary] : []),
-    ...(!hasChanges && !warningLines.length && !totalFailures ? [fullyRefreshed ? (addedAccounts ? `新增账号 ${addedAccounts} 个` : "无费用变化") : "数据暂未齐全"] : []),
+    ...(!hasChanges && !totalFailures ? [fullyRefreshed && addedAccounts ? `新增账号 ${addedAccounts} 个` : "无费用变化"] : []),
     ...changeLines,
     ...failureLines,
-    ...warningLines,
   ].join("\n");
 }
 
@@ -871,9 +867,8 @@ export function supportScanSummaryContent(payers, now = new Date()) {
     if (!item || !["create", "update", "period_range_error"].includes(item.status)) return [];
     return [`${notificationText(payer.remark)} · ${notificationText(account.name)}：${money(item.synced)} → ${money(item.aws)}`];
   }));
-  const warnings = payers.flatMap((payer) => supportDataWarnings(payer, payer.snapshot));
   const failures = payers.filter((payer) => payer.lastStatus === "failed").map((payer) => `${notificationText(payer.remark)}：${notificationText(payer.lastMessage || "扫描失败")}`);
-  const details = [...changes, ...warnings, ...failures];
+  const details = [...changes, ...failures];
   const visible = details.slice(0, 12);
   if (details.length > visible.length) visible.push(`另有 ${details.length - visible.length} 项，请在网页查看`);
   return [
