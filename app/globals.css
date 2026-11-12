@@ -184,14 +184,14 @@ button { color: inherit; }
 .account-form select option, .edit-dialog select option { color: #17243a; background: #e8edf4; }
 .account-form select option:checked, .edit-dialog select option:checked { color: #10213c; background: #8dbcf3; }
 
-.pma-account-filters { margin:0 50px 22px; padding:12px 14px; display:flex; align-items:flex-end; gap:22px; border:1px solid rgba(126,154,195,.12); border-radius:12px; background:rgba(7,14,24,.5); }
-.pma-account-filters>section { display:grid; gap:7px; }
-.pma-account-filters>section>span { color:#65768e; font-size:9px; font-weight:850; }
-.pma-account-tabs { display:flex; align-items:center; gap:8px; }
-.pma-account-tabs button { min-width:148px; display:inline-flex; align-items:center; justify-content:center; gap:9px; height:40px; padding:0 16px; border:1px solid var(--line); border-radius:9px; color:#8291a8; background:rgba(10,19,32,.68); font-size:10px; font-weight:850; cursor:pointer; transition:.2s; }
-.pma-account-tabs button:hover { color:#dfe9f8; border-color:rgba(76,143,255,.35); }
-.pma-account-tabs button.active { color:#eef5ff; border-color:rgba(76,143,255,.55); background:linear-gradient(135deg,rgba(43,105,216,.32),rgba(30,82,157,.18)); box-shadow:0 8px 24px rgba(15,70,160,.12); }
-.pma-account-tabs b { min-width:20px; height:20px; padding:0 6px; display:inline-grid; place-items:center; border-radius:999px; color:#8dbcf3; background:rgba(74,139,238,.15); font-size:9px; }
+.pma-account-filters { margin:0 50px 22px; padding:10px 12px; display:flex; align-items:center; justify-content:space-between; gap:18px; border:1px solid rgba(126,154,195,.12); border-radius:12px; background:rgba(7,14,24,.5); }
+.cma-primary { min-width:0; display:flex; align-items:center; gap:10px; }
+.cma-mode-button,.pma-mode-button { height:40px; padding:0 15px; display:inline-flex; align-items:center; justify-content:center; gap:9px; border:1px solid var(--line); border-radius:9px; color:#8291a8; background:rgba(10,19,32,.68); font-size:10px; font-weight:850; cursor:pointer; white-space:nowrap; transition:.2s; }
+.cma-mode-button { min-width:148px; }
+.pma-mode-button { margin-left:auto; border-style:dashed; color:#65768e; background:rgba(8,16,28,.38); }
+.cma-mode-button:hover,.pma-mode-button:hover { color:#dfe9f8; border-color:rgba(76,143,255,.35); }
+.cma-mode-button.active,.pma-mode-button.active { color:#eef5ff; border-style:solid; border-color:rgba(76,143,255,.55); background:linear-gradient(135deg,rgba(43,105,216,.32),rgba(30,82,157,.18)); box-shadow:0 8px 24px rgba(15,70,160,.12); }
+.cma-mode-button b,.pma-mode-button b { min-width:20px; height:20px; padding:0 6px; display:inline-grid; place-items:center; border-radius:999px; color:#8dbcf3; background:rgba(74,139,238,.15); font-size:9px; }
 .cma-account-tabs { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
 .cma-account-tabs button { min-width:82px; height:40px; padding:0 13px; display:inline-flex; align-items:center; justify-content:center; gap:7px; border:1px solid rgba(126,154,195,.15); border-radius:9px; color:#71839c; background:rgba(7,15,26,.55); cursor:pointer; font-size:10px; font-weight:850; transition:.18s; }
 .cma-account-tabs button:hover { color:#c9d8eb; border-color:rgba(76,143,255,.3); }
@@ -262,6 +262,9 @@ button { color: inherit; }
   .group-list button { width:auto; padding:0 13px; }
   .sidebar-add { width:auto; margin:2px 0 2px 8px; padding:0 13px; }
   .console-content { padding:27px 16px 50px; }
+  .pma-account-filters { margin:0 0 18px; align-items:stretch; flex-direction:column; }
+  .cma-primary { flex-wrap:wrap; }
+  .pma-mode-button { margin-left:0; align-self:flex-start; }
   .accounts-layout { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .dialog-grid { grid-template-columns:1fr; }
   .command-panel pre { height:245px; }

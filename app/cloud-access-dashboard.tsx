@@ -257,13 +257,14 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
   }, [accounts, query, selectedGroup]);
 
   const cmaAccounts = useMemo(() => visibleAccounts.filter((account) => (account.accountType || 'cma') === 'cma'), [visibleAccounts]);
+  const pmaAccounts = useMemo(() => visibleAccounts.filter((account) => account.accountType === 'pma'), [visibleAccounts]);
   const cmaSections = useMemo(() => [...new Set(cmaAccounts.map((account) => cmaSectionName(account.name)))].sort(compareCmaSections), [cmaAccounts]);
   const activeCmaSection = cmaSections.includes(cmaSection) ? cmaSection : (cmaSections[0] ?? '');
   const displayedAccounts = useMemo(() => {
     if (groupNameFor(selectedGroup) !== 'PMA') return visibleAccounts;
-    if (pmaAccountType === 'pma') return visibleAccounts.filter((account) => account.accountType === 'pma');
+    if (pmaAccountType === 'pma') return pmaAccounts;
     return cmaAccounts.filter((account) => cmaSectionName(account.name) === activeCmaSection);
-  }, [visibleAccounts, selectedGroup, pmaAccountType, groups, cmaAccounts, activeCmaSection]);
+  }, [visibleAccounts, selectedGroup, pmaAccountType, groups, pmaAccounts, cmaAccounts, activeCmaSection]);
 
   const orderedGroups = useMemo(() => [...groups].sort((left, right) => {
     const leftIndex = GROUP_DISPLAY_ORDER.indexOf(left.name);
@@ -454,7 +455,7 @@ export function CloudAccessDashboard({ userName, userRole }: { userName: string;
           {loading && <div className="accounts-layout">{[0,1,2,3].map((item) => <div className="account-tile loading-tile" key={item} />)}</div>}
           {!loading && loadError && <div className="inline-state error"><span>!</span><strong>{loadError}</strong><button onClick={() => void loadData()}>重试</button></div>}
           {!loading && !loadError && (<>
-          {groupNameFor(selectedGroup) === 'PMA' && <div className="pma-account-filters"><section><span>账号类型</span><div className="pma-account-tabs" role="tablist" aria-label="PMA 架构账号类型"><button type="button" aria-pressed={pmaAccountType === 'cma'} className={pmaAccountType === 'cma' ? 'active' : ''} onClick={() => setPmaAccountType('cma')}>CMA 客户账号 <b>{cmaAccounts.length}</b></button><button type="button" aria-pressed={pmaAccountType === 'pma'} className={pmaAccountType === 'pma' ? 'active' : ''} onClick={() => setPmaAccountType('pma')}>PMA 管理账号 <b>{visibleAccounts.filter((account) => account.accountType === 'pma').length}</b></button></div></section>{pmaAccountType === 'cma' && cmaSections.length > 0 && <section><span>CMA 分组</span><div className="cma-account-tabs" role="tablist" aria-label="CMA 账号分组">{cmaSections.map((section) => <button type="button" key={section} aria-pressed={activeCmaSection === section} className={activeCmaSection === section ? 'active' : ''} onClick={() => setCmaSection(section)}>{section}<b>{cmaAccounts.filter((account) => cmaSectionName(account.name) === section).length}</b></button>)}</div></section>}</div>}
+          {groupNameFor(selectedGroup) === 'PMA' && <div className="pma-account-filters"><div className="cma-primary"><button type="button" className={`cma-mode-button ${pmaAccountType === 'cma' ? 'active' : ''}`} aria-pressed={pmaAccountType === 'cma'} onClick={() => setPmaAccountType('cma')}>CMA 客户账号 <b>{cmaAccounts.length}</b></button>{pmaAccountType === 'cma' && cmaSections.length > 0 && <div className="cma-account-tabs" role="tablist" aria-label="CMA 账号分组">{cmaSections.map((section) => <button type="button" key={section} aria-pressed={activeCmaSection === section} className={activeCmaSection === section ? 'active' : ''} onClick={() => setCmaSection(section)}>{section}<b>{cmaAccounts.filter((account) => cmaSectionName(account.name) === section).length}</b></button>)}</div>}</div><button type="button" className={`pma-mode-button ${pmaAccountType === 'pma' ? 'active' : ''}`} aria-pressed={pmaAccountType === 'pma'} onClick={() => setPmaAccountType('pma')}>PMA 管理账号 <b>{pmaAccounts.length}</b></button></div>}
           <div className="accounts-layout">
               {displayedAccounts.map((account, index) => (
                 <article className="account-tile clickable note-only" key={account.id} style={{ animationDelay: `${index * 55}ms` }} onClick={() => launchConsole(account)} onKeyDown={(event) => { if (event.key === 'Enter') launchConsole(account); }} onDragStart={(event) => { if (!isAdmin) return; event.dataTransfer.setData('text/account-id', account.id); event.dataTransfer.effectAllowed = 'move'; }} draggable={isAdmin} role="button" tabIndex={0} aria-label={`进入 ${account.name} AWS 控制台`} title={isAdmin ? '点击进入 AWS，拖动可调整分组' : '点击进入 AWS'}>
